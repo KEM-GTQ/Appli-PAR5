@@ -5,6 +5,12 @@ node_modules/
 dist/
 dist-web/
 
+# Secrets de l'API (SharePoint, plus tard MySQL). Le modèle est .env.example.
+.env
+
+# Icônes recopiées par Vite pour le manifeste. La source est src/assets.
+public/
+
 # Divers
 *.log
 npm-debug.log*

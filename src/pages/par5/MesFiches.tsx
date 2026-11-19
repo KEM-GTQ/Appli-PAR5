@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import { FileText, Trash2, Plus, Share2, Download, CopyPlus } from 'lucide-react'
 import { listerPar5, supprimerPar5, type Par5Enregistre, retouchee } from '@/data/par5-store'
 import { construirePdfPar5, envoyerPdf, peutChoisirDossier } from '@/data/pdf-par5'
+import { reessayerPar5 } from '@/data/sync-par5'
 import type { Ouverture } from './Par5Form'
 
 /**
- * Les PAR 5 remplis sur ce téléphone. Rien ne sort de l'appareil : la fiche est
- * conservée localement tant que personne ne la supprime.
+ * Les PAR 5 de ce téléphone. La fiche reste sur l'appareil ; quand elle a été
+ * envoyée, la ligne dit si le PDF est arrivé dans SharePoint.
  */
 export function MesFiches({
   onReprendre,
@@ -21,15 +22,28 @@ export function MesFiches({
   /* Sur un poste le bouton enregistre où l’on veut ; sur un téléphone il partage. */
   const surPoste = peutChoisirDossier()
 
-  useEffect(() => setFiches(listerPar5()), [])
+  useEffect(() => {
+    let vivant = true
+    const charger = (): void => {
+      void listerPar5().then((liste) => {
+        if (vivant) setFiches(liste)
+      })
+    }
+    charger()
+    window.addEventListener('par5-sync', charger)
+    return () => {
+      vivant = false
+      window.removeEventListener('par5-sync', charger)
+    }
+  }, [])
 
   async function envoyer(f: Par5Enregistre): Promise<void> {
     await envoyerPdf(construirePdfPar5(f.donnees, f.dateISO))
   }
 
-  function supprimer(id: string): void {
-    supprimerPar5(id)
-    setFiches(listerPar5())
+  async function supprimer(id: string): Promise<void> {
+    await supprimerPar5(id)
+    setFiches(await listerPar5())
   }
 
   if (!fiches.length) {
@@ -104,12 +118,37 @@ export function MesFiches({
               <button
                 type="button"
                 aria-label={`Supprimer la fiche ${titre}`}
-                onClick={() => supprimer(f.id)}
+                onClick={() => void supprimer(f.id)}
                 className="shrink-0 rounded-lg p-2.5 text-gtq-texte2"
               >
                 <Trash2 size={18} aria-hidden="true" />
               </button>
             </div>
+            {f.statut === 'depose' && (
+              <p className="mt-1 text-[12px] text-gtq-vert">
+                {f.sharePointUrl ? (
+                  <a href={f.sharePointUrl} target="_blank" rel="noreferrer" className="underline">
+                    Dans SharePoint
+                  </a>
+                ) : (
+                  'Dans SharePoint'
+                )}
+              </p>
+            )}
+            {f.statut === 'attente' && (
+              <p className="mt-1 text-[12px] text-gtq-texte2">En attente de SharePoint</p>
+            )}
+            {f.statut === 'envoi' && (
+              <p className="mt-1 text-[12px] text-gtq-texte2">Dépôt en cours</p>
+            )}
+            {f.statut === 'erreur' && (
+              <p className="mt-1 text-[12px] text-gtq-orange">
+                {f.erreur || 'Dépôt impossible.'}{' '}
+                <button type="button" className="underline" onClick={() => void reessayerPar5(f.id)}>
+                  Réessayer
+                </button>
+              </p>
+            )}
 
             {/*
              * REPRENDRE POUR AUJOURD'HUI.

@@ -25,6 +25,7 @@ import {
 } from '@/data/par5'
 import { enregistrerPar5, poidsPhotos } from '@/data/par5-store'
 import { construirePdfPar5, envoyerPdf, peutChoisirDossier } from '@/data/pdf-par5'
+import { deposerPar5 } from '@/data/sync-par5'
 import { compresserPhoto, ko, poids, BUDGET_PHOTOS, PhotoTropLourde } from '@/data/photo'
 
 /**
@@ -71,6 +72,7 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
   const [idCourant, setIdCourant] = useState<string | undefined>(undefined)
   const [ouvert, setOuvert] = useState<string | null>(null)
   const [message, setMessage] = useState('')
+  const [messageTon, setMessageTon] = useState<'ok' | 'warn'>('ok')
   /** Écran de contrôle avant transmission — `null` tant qu'on ne l'a pas levé. */
   const [controle, setControle] = useState<Manque[] | null>(null)
   /** Risque dont la photo est en cours de compression (le bouton attend). */
@@ -182,7 +184,7 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
     try {
       const url = await compresserPhoto(fichier)
 
-      const ailleurs = poidsPhotos(idCourant)
+      const ailleurs = await poidsPhotos(idCourant)
       const memeFiche = d.lignes.reduce(
         (n, l) => n + (l.risqueId === risqueId ? 0 : poids(l.photo)),
         0
@@ -240,11 +242,26 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
     setPropre(true)
     /* On enregistre d abord : une fiche qu on transmet ne doit pas pouvoir se
        perdre parce que le partage a échoué ou que le téléphone s est éteint. */
-    const r = enregistrerPar5(d, idCourant)
+    const r = await enregistrerPar5(d, idCourant)
     setIdCourant(r.id)
+    if (!r.persiste) {
+      setMessageTon('warn')
+      setMessage('Enregistrement impossible (mémoire pleine).')
+      return
+    }
     try {
-      const issue = await envoyerPdf(construirePdfPar5(d, r.dateISO))
-      setMessage(
+      const pdf = construirePdfPar5(d, r.dateISO)
+      let depot = { texte: 'Dépôt SharePoint reporté.', alerte: true }
+      try {
+        depot = await deposerPar5(r, await pdf.blob.arrayBuffer())
+      } catch (e) {
+        depot = {
+          texte: 'Dépôt SharePoint reporté : ' + (e instanceof Error ? e.message : String(e)),
+          alerte: true
+        }
+      }
+      const issue = await envoyerPdf(pdf)
+      const local =
         issue === 'enregistre'
           ? 'PDF enregistré à l’endroit choisi.'
           : issue === 'partage'
@@ -252,16 +269,19 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
             : issue === 'telecharge'
               ? 'PDF enregistré dans les téléchargements.'
               : 'Enregistrement annulé — la fiche, elle, reste enregistrée.'
-      )
+      setMessageTon(depot.alerte ? 'warn' : 'ok')
+      setMessage(`${local} ${depot.texte}`.trim())
     } catch (e) {
+      setMessageTon('warn')
       setMessage('PDF impossible à produire : ' + (e instanceof Error ? e.message : String(e)))
     }
   }
 
-  function enregistrer(): void {
+  async function enregistrer(): Promise<void> {
     setPropre(true)
-    const r = enregistrerPar5(d, idCourant)
+    const r = await enregistrerPar5(d, idCourant)
     setIdCourant(r.id)
+    setMessageTon(r.persiste ? 'ok' : 'warn')
     setMessage(
       r.persiste
         ? 'Fiche enregistrée sur ' + (surPoste ? 'ce poste' : 'le téléphone') + '.'
@@ -575,7 +595,11 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
       {/* -------------------------------------------------- barre d'action */}
       <div className="safe-bas fixed inset-x-0 bottom-[64px] z-30 border-t border-gtq-filet bg-gtq-fond/95 px-4 py-3 backdrop-blur">
         {message && (
-          <p className="mb-2 text-center text-[13px] text-gtq-vert">{message}</p>
+          <p
+            className={`mb-2 text-center text-[13px] ${messageTon === 'warn' ? 'text-gtq-orange' : 'text-gtq-vert'}`}
+          >
+            {message}
+          </p>
         )}
         <div className="flex items-center gap-2.5">
           <button

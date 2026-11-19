@@ -1,6 +1,8 @@
 /**
- * Enregistrement des PAR 5 (analyses de risques remplies). Persistés sur le
- * poste (localStorage). Même patron tolérant + versionné que calculs-store.
+ * Enregistrement des PAR 5 (analyses de risques remplies).
+ *
+ * Les fiches vivent dans IndexedDB. Au premier lancement, ce qui était encore
+ * dans localStorage (clé `gtq-par5`) est repris, puis la clé est retirée.
  */
 import {
   RISQUES,
@@ -10,6 +12,14 @@ import {
   type Presence,
   type Travailleur
 } from './par5'
+import {
+  lireFiche,
+  mettreFiche,
+  supprimerFiche,
+  toutesLesFiches,
+  type FicheStockee,
+  type StatutSync
+} from './par5-db'
 
 export interface Par5Enregistre {
   id: string
@@ -27,12 +37,94 @@ export interface Par5Enregistre {
   /** Dernière modification — pour savoir si la fiche a été retouchée. */
   majISO?: string
   donnees: DonneesPar5
+  /** Absent sur une fiche pas encore passée par la file d'envoi. */
+  statut?: StatutSync
+  erreur?: string | null
+  sharePointUrl?: string | null
+  reessayable?: boolean
 }
 
 const CLE = 'gtq-par5'
 export const SCHEMA_PAR5 = 1
 
 const uid = (): string => 'par5-' + Math.random().toString(36).slice(2, 10)
+
+function resume(fiche: FicheStockee): Par5Enregistre {
+  return {
+    id: fiche.id,
+    dateISO: fiche.dateISO,
+    majISO: fiche.majISO,
+    donnees: fiche.donnees,
+    statut: fiche.statut,
+    erreur: fiche.erreur,
+    sharePointUrl: fiche.sharePointUrl,
+    reessayable: fiche.reessayable
+  }
+}
+
+let migration: Promise<void> | null = null
+
+/** Reprend les fiches de l'ancien localStorage, une seule fois par onglet. */
+function assurerMigration(): Promise<void> {
+  if (!migration) {
+    migration = migrerAncienStockage().catch((erreur) => {
+      migration = null
+      throw erreur
+    })
+  }
+  return migration
+}
+
+async function migrerAncienStockage(): Promise<void> {
+  let brut: string | null = null
+  try {
+    brut = localStorage.getItem(CLE)
+  } catch {
+    return
+  }
+  if (!brut) return
+
+  let arr: unknown[] = []
+  try {
+    const json = JSON.parse(brut) as unknown
+    if (Array.isArray(json)) arr = json
+    else if (json && typeof json === 'object' && Array.isArray((json as { par5?: unknown }).par5)) {
+      arr = (json as { par5: unknown[] }).par5
+    }
+  } catch {
+    return
+  }
+
+  const deja = new Set((await toutesLesFiches()).map((f) => f.id))
+  for (const item of arr) {
+    const fiche = normaliserPar5(item)
+    if (!fiche || deja.has(fiche.id)) continue
+    await mettreFiche({
+      id: fiche.id,
+      dateISO: fiche.dateISO,
+      majISO: fiche.majISO,
+      donnees: fiche.donnees,
+      pdf: null,
+      nomPdf: null,
+      statut: 'brouillon',
+      reessayable: false,
+      erreur: null,
+      sharePointUrl: null,
+      deposeISO: null
+    })
+  }
+  try {
+    localStorage.removeItem(CLE)
+  } catch {
+    /* La copie IndexedDB est faite. Si la clé reste, le prochain lancement la retrouvera déjà. */
+  }
+}
+
+/** Ouvre le stockage. Échoue si le navigateur bloque IndexedDB. */
+export async function ouvrirStockage(): Promise<void> {
+  await assurerMigration()
+  await toutesLesFiches()
+}
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d)
 
 function normaliserLigne(risqueId: string, x: unknown): LignePar5 {
@@ -91,47 +183,44 @@ export function normaliserPar5(x: unknown): Par5Enregistre | null {
   return { id, dateISO, majISO, donnees: normaliserDonnees(o.donnees) }
 }
 
-function lire(): Par5Enregistre[] {
-  try {
-    const brut = JSON.parse(localStorage.getItem(CLE) || '[]')
-    const arr = Array.isArray(brut) ? brut : brut && Array.isArray(brut.par5) ? brut.par5 : []
-    return arr.map(normaliserPar5).filter((p: Par5Enregistre | null): p is Par5Enregistre => p !== null)
-  } catch {
-    return []
-  }
+export async function listerPar5(): Promise<Par5Enregistre[]> {
+  await assurerMigration()
+  const fiches = await toutesLesFiches()
+  return fiches.map(resume).sort((a, b) => b.dateISO.localeCompare(a.dateISO))
 }
 
-function ecrire(l: Par5Enregistre[]): boolean {
-  try {
-    localStorage.setItem(CLE, JSON.stringify({ v: SCHEMA_PAR5, par5: l }))
-    return true
-  } catch {
-    console.error('[par5-store] Écriture localStorage échouée (quota ?) — non persisté.')
-    return false
-  }
-}
-
-export function listerPar5(): Par5Enregistre[] {
-  return lire().sort((a, b) => b.dateISO.localeCompare(a.dateISO))
-}
-
-export function enregistrerPar5(donnees: DonneesPar5, id?: string): Par5Enregistre & { persiste: boolean } {
-  const l = lire()
+export async function enregistrerPar5(
+  donnees: DonneesPar5,
+  id?: string
+): Promise<Par5Enregistre & { persiste: boolean }> {
+  await assurerMigration()
   const rid = id ?? uid()
-  const i = l.findIndex((x) => x.id === rid)
+  const existante = await lireFiche(rid)
   const maintenant = new Date().toISOString()
 
   /* On CONSERVE la date de l'analyse quand la fiche existe déjà ; seule la
-     date de modification suit. */
-  const rec: Par5Enregistre = {
+     date de modification suit. Un enregistrement local n'envoie rien :
+     le PDF précédent ne correspond plus au texte, on le retire de la file. */
+  const rec: FicheStockee = {
     id: rid,
-    dateISO: i >= 0 ? l[i].dateISO : maintenant,
+    dateISO: existante?.dateISO ?? maintenant,
     majISO: maintenant,
-    donnees
+    donnees,
+    pdf: null,
+    nomPdf: null,
+    statut: 'brouillon',
+    reessayable: false,
+    erreur: null,
+    sharePointUrl: existante?.sharePointUrl ?? null,
+    deposeISO: existante?.deposeISO ?? null
   }
-  if (i >= 0) l[i] = rec
-  else l.push(rec)
-  return { ...rec, persiste: ecrire(l) }
+  try {
+    await mettreFiche(rec)
+    return { ...resume(rec), persiste: true }
+  } catch {
+    console.error('[par5-store] Écriture IndexedDB échouée — non persisté.')
+    return { ...resume(rec), persiste: false }
+  }
 }
 
 /** La fiche a-t-elle été retouchée après le jour de l'analyse ? */
@@ -184,15 +273,21 @@ export function dupliquerPar5(source: Par5Enregistre, dateJour: string): Donnees
  * `exclureId` ecarte la fiche en cours d'edition, dont les photos vont etre
  * reecrites et non ajoutees.
  */
-export function poidsPhotos(exclureId?: string): number {
+export async function poidsPhotos(exclureId?: string): Promise<number> {
+  await assurerMigration()
   let n = 0
-  for (const p of lire()) {
+  for (const p of await toutesLesFiches()) {
     if (p.id === exclureId) continue
     for (const l of p.donnees.lignes) n += l.photo ? l.photo.length : 0
   }
   return n
 }
 
-export function supprimerPar5(id: string): boolean {
-  return ecrire(lire().filter((p) => p.id !== id))
+export async function supprimerPar5(id: string): Promise<boolean> {
+  try {
+    await supprimerFiche(id)
+    return true
+  } catch {
+    return false
+  }
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ShieldAlert, FolderOpen, BookOpen, Sun, Moon } from 'lucide-react'
 import { SplashGtq, HAUTEUR_BARRE } from './components/SplashGtq'
 import { Logo } from './components/Logo'
@@ -6,7 +6,8 @@ import { Installer } from './components/Installer'
 import { Par5Form, type Ouverture } from './pages/par5/Par5Form'
 import { MesFiches } from './pages/par5/MesFiches'
 import { Definitions } from './pages/par5/Definitions'
-import { dupliquerPar5, type Par5Enregistre } from './data/par5-store'
+import { dupliquerPar5, ouvrirStockage, type Par5Enregistre } from './data/par5-store'
+import { flushPending, inscrireSyncArrierePlan } from './data/sync-par5'
 import { appliquerTheme, lireTheme, type Theme } from './data/theme'
 
 /**
@@ -37,6 +38,9 @@ export function App() {
   const [aReprendre, setAReprendre] = useState<Ouverture | null>(null)
   /** Y a-t-il du travail non enregistré dans le formulaire ? */
   const [enCours, setEnCours] = useState(false)
+  /** Ligne d'état du dépôt. Vide quand tout va bien : l'écran reste celui du PAR 5. */
+  const [annonce, setAnnonce] = useState<string | null>(null)
+  const stockageBloque = useRef(false)
 
   function basculerTheme(): void {
     const t: Theme = theme === 'sombre' ? 'clair' : 'sombre'
@@ -68,6 +72,82 @@ export function App() {
    * cette question, le geste le plus naturel du monde effacerait vingt minutes
    * de travail.
    */
+  useEffect(() => {
+    let annule = false
+    const stockage = stockageBloque
+
+    async function sante(): Promise<void> {
+      if (stockage.current || !navigator.onLine || location.protocol === 'file:') return
+      try {
+        const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+        const reponse = await fetch(`${base}/api/health`, { cache: 'no-store' })
+        if (!reponse.ok) throw new Error('sante')
+        const corps = (await reponse.json()) as { sharePointConfigured?: boolean }
+        if (annule || stockage.current) return
+        setAnnonce(
+          corps.sharePointConfigured
+            ? null
+            : 'SharePoint n’est pas configuré. Les fiches restent sur ce téléphone.'
+        )
+      } catch {
+        if (!annule && !stockage.current) {
+          setAnnonce('Le serveur ne répond pas. Les fiches restent sur ce téléphone.')
+        }
+      }
+    }
+
+    function enLigne(): void {
+      if (stockage.current) return
+      setAnnonce(null)
+      void sante()
+      void inscrireSyncArrierePlan()
+      void flushPending()
+    }
+
+    function horsLigne(): void {
+      if (!stockage.current) {
+        setAnnonce('Hors réseau. Les fiches restent sur ce téléphone et partent au retour de la connexion.')
+      }
+    }
+
+    function messageAgent(event: MessageEvent): void {
+      if (event.data?.type === 'par5-sync') window.dispatchEvent(new CustomEvent('par5-sync'))
+    }
+
+    void ouvrirStockage().catch(() => {
+      stockage.current = true
+      if (!annule) {
+        setAnnonce('Ce navigateur bloque le stockage : les fiches ne peuvent pas être gardées hors ligne.')
+      }
+    })
+
+    if (location.protocol !== 'file:') {
+      if (navigator.onLine) {
+        void sante()
+        void inscrireSyncArrierePlan()
+        void flushPending()
+      } else {
+        horsLigne()
+      }
+    }
+
+    window.addEventListener('online', enLigne)
+    window.addEventListener('offline', horsLigne)
+    navigator.serviceWorker?.addEventListener('message', messageAgent)
+    const timer = window.setInterval(() => {
+      if (navigator.onLine) void sante()
+      if (navigator.onLine) void flushPending()
+    }, 30_000)
+
+    return () => {
+      annule = true
+      window.removeEventListener('online', enLigne)
+      window.removeEventListener('offline', horsLigne)
+      navigator.serviceWorker?.removeEventListener('message', messageAgent)
+      window.clearInterval(timer)
+    }
+  }, [])
+
   function redemarrer(): void {
     if (
       enCours &&
@@ -130,6 +210,15 @@ export function App() {
       {/* L’invitation à poser l’icône sur l’écran d’accueil. Elle ne s’affiche
           que là où elle a un sens : hébergée, pas déjà installée, pas masquée. */}
       <Installer />
+
+      {annonce && (
+        <p
+          role="status"
+          className="shrink-0 border-b border-gtq-filet bg-gtq-surface px-4 py-2 text-center text-[13px] text-gtq-texte"
+        >
+          {annonce}
+        </p>
+      )}
 
       <main className="min-h-0 flex-1 overflow-y-auto">
         {onglet === 'par5' ? (
