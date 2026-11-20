@@ -109,16 +109,25 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
         tache: fiche.donnees.tache,
         dateISO: fiche.dateISO,
         majISO: fiche.majISO,
+        lignes: fiche.donnees.lignes.map((l) => ({
+          risqueId: l.risqueId,
+          present: l.present,
+          specification: l.specification,
+          moyens: l.moyens,
+          responsable: l.responsable,
+          realise: l.realise
+        })),
+        travailleurs: fiche.donnees.travailleurs,
         pdfBase64: enBase64(fiche.pdf)
       })
     })
-    let corps: { error?: string; retryable?: boolean; sharePointUrl?: string | null; syncedAt?: string } = {}
+    let corps: { id?: string; error?: string; retryable?: boolean; sharePointUrl?: string | null; syncedAt?: string } = {}
     try {
       corps = await reponse.json()
     } catch {
       corps = {}
     }
-    if (reponse.ok) {
+    if (reponse.ok && corps.id === fiche.id) {
       await patchFiche(fiche.id, {
         statut: 'depose',
         reessayable: false,
@@ -129,7 +138,7 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
       await prevenir()
       return true
     }
-    const reessayable = typeof corps.retryable === 'boolean' ? corps.retryable : reponse.status >= 500
+    const reessayable = reponse.ok || (typeof corps.retryable === 'boolean' ? corps.retryable : reponse.status >= 500)
     await patchFiche(fiche.id, {
       statut: 'erreur',
       reessayable,
@@ -148,8 +157,8 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
   }
 }
 
-async function vider(): Promise<{ remaining: number; offline: boolean }> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+async function vider(forcer = false): Promise<{ remaining: number; offline: boolean }> {
+  if (!forcer && typeof navigator !== 'undefined' && navigator.onLine === false) {
     const enAttente = await fichesADeposer()
     return { remaining: enAttente.length, offline: enAttente.length > 0 }
   }
@@ -163,9 +172,9 @@ async function vider(): Promise<{ remaining: number; offline: boolean }> {
   return { remaining, offline: false }
 }
 
-export async function flushPending(): Promise<{ remaining: number; offline?: boolean }> {
+export async function flushPending(forcer = false): Promise<{ remaining: number; offline?: boolean }> {
   try {
-    return await avecVerrou(() => vider())
+    return await avecVerrou(() => vider(forcer))
   } catch (erreur) {
     console.error(`Sync échouée : ${erreur instanceof Error ? erreur.message : String(erreur)}`)
     return { remaining: 1 }

@@ -5,11 +5,10 @@ Application **téléphone** permettant aux travailleurs de remplir sur place le
 de le signer et de le transmettre en PDF.
 
 La fiche et son PDF sont produits sur le téléphone et gardés dans IndexedDB.
-Dès que l'appareil joint l'API, celle-ci dépose le PDF dans SharePoint. Le
-téléphone ne voit ni le secret Microsoft, ni le futur mot de passe MySQL.
-L'écriture en base n'est pas branchée : `server/schema.sql` est le script à
-approuver le jour où la base existera. Un nouvel envoi de la même fiche
-écrase le fichier SharePoint au lieu d'en créer un second.
+Dès que l'appareil joint l'API, celle-ci dépose le PDF dans SharePoint et
+écrit la fiche dans MySQL. Le téléphone ne voit ni le secret Microsoft, ni
+le mot de passe MySQL. Un nouvel envoi de la même fiche écrase le fichier
+SharePoint et met à jour la même ligne, au lieu d'en créer une seconde.
 
 Le fichier HTML unique posé sur le Bureau ne peut pas déposer dans SharePoint.
 C'est la version hébergée (`dist-web/`) qui le fait.
@@ -68,7 +67,7 @@ src/
     photo.ts                 compression et budget mémoire des photos
     theme.ts                 bascule clair/sombre
   pages/par5/                formulaire, mes fiches, définitions
-server/                      API : PDF vers SharePoint, MySQL prévu mais non écrit
+server/                      API : PDF vers SharePoint, fiche écrite dans MySQL
 tools/                       construction, publication et bancs d'essai
 ```
 

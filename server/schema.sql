@@ -1,7 +1,5 @@
--- Table proposée pour les PAR 5. L'API ne lance pas ce fichier.
--- À exécuter seulement une fois la base et le compte approuvés.
--- Elle n'altère aucune table existante : elle crée `par5_fiches` si elle manque.
--- Le PDF n'est pas stocké ici. La ligne garde les champs d'en-tête et l'adresse SharePoint.
+-- Même table que l'API crée au démarrage quand MySQL est configuré.
+-- Le PDF n'est pas stocké ici. La ligne garde l'en-tête, les réponses et l'adresse SharePoint.
 
 CREATE TABLE IF NOT EXISTS par5_fiches (
   id VARCHAR(16) NOT NULL,
@@ -15,6 +13,8 @@ CREATE TABLE IF NOT EXISTS par5_fiches (
   nom_pdf VARCHAR(255) NOT NULL,
   sharepoint_url VARCHAR(2048) NULL,
   sharepoint_item_id VARCHAR(128) NULL,
+  lignes JSON NOT NULL,
+  travailleurs JSON NOT NULL,
   PRIMARY KEY (id)
 );
 

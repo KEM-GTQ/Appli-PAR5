@@ -67,7 +67,7 @@ export function buildContentUrl(env, fileName, resolvedSiteId) {
   }
 
   const parsedSite = parseSharePointLocation(env.SHAREPOINT_SITE_URL);
-  const folder = env.SHAREPOINT_FOLDER || parsedSite?.folder || "PAR5";
+  const folder = env.SHAREPOINT_FOLDER || parsedSite?.folder || "Cursor";
   const segments = folder
     .split("/")
     .map((segment) => segment.trim())

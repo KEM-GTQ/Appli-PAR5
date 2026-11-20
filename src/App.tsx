@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ShieldAlert, FolderOpen, BookOpen, Sun, Moon } from 'lucide-react'
+import { donneesPar5Exemple } from './data/par5'
 import { SplashGtq, HAUTEUR_BARRE } from './components/SplashGtq'
 import { Logo } from './components/Logo'
 import { Installer } from './components/Installer'
@@ -40,6 +41,7 @@ export function App() {
   const [enCours, setEnCours] = useState(false)
   /** Ligne d'état du dépôt. Vide quand tout va bien : l'écran reste celui du PAR 5. */
   const [annonce, setAnnonce] = useState<string | null>(null)
+  const [connecte, setConnecte] = useState(() => navigator.onLine)
   const stockageBloque = useRef(false)
 
   function basculerTheme(): void {
@@ -55,6 +57,17 @@ export function App() {
 
   function dupliquer(f: Par5Enregistre): void {
     reprendre({ donnees: dupliquerPar5(f, aujourdhui()) })
+  }
+
+  function remplirExemple(): void {
+    if (
+      enCours &&
+      !window.confirm(
+        'Remplacer la fiche en cours par l’exemple ?\n\nCe qui n’est pas enregistré sera perdu.'
+      )
+    )
+      return
+    reprendre({ donnees: donneesPar5Exemple(aujourdhui()), exemple: true })
   }
 
   /**
@@ -97,14 +110,16 @@ export function App() {
     }
 
     function enLigne(): void {
+      setConnecte(true)
       if (stockage.current) return
       setAnnonce(null)
       void sante()
       void inscrireSyncArrierePlan()
-      void flushPending()
+      void flushPending(true)
     }
 
     function horsLigne(): void {
+      setConnecte(false)
       if (!stockage.current) {
         setAnnonce('Hors réseau. Les fiches restent sur ce téléphone et partent au retour de la connexion.')
       }
@@ -191,11 +206,30 @@ export function App() {
 
           {/* La barre reste noire dans les deux thèmes : ses encres sont donc
               posées en blanc littéral, pas avec les jetons qui basculent. */}
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={remplirExemple}
+              className="flex h-9 items-center rounded-full px-2.5 text-[12px] font-semibold text-white/90"
+            >
+              Exemple
+            </button>
+            <span
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-1.5 px-1.5 text-[12px] font-medium text-white/80"
+            >
+              <span
+                aria-hidden="true"
+                className={`h-2 w-2 rounded-full ${connecte ? 'bg-emerald-400' : 'bg-amber-400'}`}
+              />
+              {connecte ? 'En ligne' : 'Hors ligne'}
+            </span>
           <button
             type="button"
             onClick={basculerTheme}
             aria-label={theme === 'sombre' ? 'Passer en mode clair' : 'Passer en mode sombre'}
-            className="ml-auto -mr-2 flex h-11 w-11 items-center justify-center rounded-full text-white/75"
+            className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full text-white/75"
           >
             {theme === 'sombre' ? (
               <Sun size={20} aria-hidden="true" />
@@ -203,6 +237,7 @@ export function App() {
               <Moon size={20} aria-hidden="true" />
             )}
           </button>
+          </div>
         </div>
         <div className="barre-gtq" />
       </header>

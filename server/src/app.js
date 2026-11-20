@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import express from "express";
 import { HttpError } from "./errors.js";
-import { enregistrerFiche, isDatabaseConfigured } from "./mysql.js";
+import { enregistrerFiche as ecrireMysql, isDatabaseConfigured } from "./mysql.js";
 import {
   isSharePointConfigured,
   missingSettings,
@@ -29,7 +29,12 @@ function originesAutorisees(env) {
     .filter(Boolean);
 }
 
-export function createApp({ env = process.env, uploadPdf = uploadPdfToSharePoint } = {}) {
+export function createApp({
+  env = process.env,
+  uploadPdf = uploadPdfToSharePoint,
+  pool = null,
+  enregistrerFiche = null,
+} = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -64,14 +69,34 @@ export function createApp({ env = process.env, uploadPdf = uploadPdfToSharePoint
     next();
   }
 
-  app.get("/api/health", (req, res) => {
+  app.get("/api/health", asyncRoute(async (req, res) => {
+    let databaseOk = false;
+    if (pool && isDatabaseConfigured(env)) {
+      try {
+        await pool.query("SELECT 1");
+        databaseOk = true;
+      } catch (error) {
+        console.error(`MySQL injoignable : ${error.message}`);
+      }
+    }
     res.json({
       ok: true,
       databaseConfigured: isDatabaseConfigured(env),
-      databaseOk: false,
+      databaseOk,
       sharePointConfigured: isSharePointConfigured(env),
     });
-  });
+  }));
+
+  async function ecrireEnBase(fiche, uploaded) {
+    const ecrire = enregistrerFiche || ((ficheEcrite, fichier) => ecrireMysql(pool, ficheEcrite, fichier));
+    try {
+      await ecrire(fiche, uploaded);
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      console.error(`Écriture MySQL échouée pour ${fiche.id} : ${error.message}`);
+      throw new HttpError("L'enregistrement dans la base a échoué.", 502, true);
+    }
+  }
 
   app.post("/api/par5", requireApiKey, asyncRoute(async (req, res) => {
     const fiche = validateFiche(req.body);
@@ -80,6 +105,10 @@ export function createApp({ env = process.env, uploadPdf = uploadPdfToSharePoint
       console.error(`Dépôt non configuré. Manque : ${missing.join(", ")}`);
       throw new HttpError("Le dépôt SharePoint n'est pas configuré.", 503, true);
     }
+
+    /* La fiche est écrite avant le PDF. Si la connexion tombe pendant l'envoi
+       vers SharePoint, la ligne existe déjà et le prochain essai la complète. */
+    if (isDatabaseConfigured(env)) await ecrireEnBase(fiche, null);
 
     let uploaded;
     try {
@@ -94,13 +123,12 @@ export function createApp({ env = process.env, uploadPdf = uploadPdfToSharePoint
       console.warn(`Le dépôt de ${fiche.id} n'a pas renvoyé d'adresse.`);
     }
 
-    if (isDatabaseConfigured(env)) {
-      await enregistrerFiche();
-      console.log(`MySQL est renseigné pour ${fiche.id}, l'écriture n'est pas encore branchée.`);
-    }
+    if (isDatabaseConfigured(env)) await ecrireEnBase(fiche, uploaded);
 
     const syncedAt = new Date().toISOString();
-    console.log(`PDF ${fiche.pdfName} déposé dans SharePoint. Écriture MySQL inactive.`);
+    console.log(
+      `PDF ${fiche.pdfName} déposé dans SharePoint${isDatabaseConfigured(env) ? " et écrit dans MySQL" : ""}.`,
+    );
     res.status(201).json({
       id: fiche.id,
       sharePointUrl: uploaded.webUrl || null,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createApp } from "../src/app.js";
+import { enregistrerFiche } from "../src/mysql.js";
 import { buildContentUrl, parseSharePointLocation } from "../src/sharepoint.js";
 import { validateFiche } from "../src/validate.js";
 
@@ -101,10 +102,78 @@ test("dépose le PDF sans MySQL et réutilise le même nom", async () => {
   });
 });
 
-test("un MySQL renseigné ne bloque pas le dépôt", async () => {
+test("l'upsert MySQL réutilise l'id et n'enregistre pas le PDF", async () => {
+  const requetes = [];
+  const pool = {
+    async query(sql, params) {
+      requetes.push({ sql, params });
+      return [[]];
+    },
+  };
+  await enregistrerFiche(
+    pool,
+    {
+      id: "par5-ab12cd34",
+      noProjet: "HQC26-075",
+      installation: "Poste",
+      emplacement: "Salle",
+      tache: "Cellule",
+      dateISO: "2026-11-20T15:00:00.000Z",
+      majISO: null,
+      pdfName: "PAR5-par5-ab12cd34.pdf",
+      lignes: [{ risqueId: "chute", present: "oui", specification: "", moyens: "Harnais", responsable: "AM", realise: true, photo: "data:image/jpeg;ne-pas-garder" }],
+      travailleurs: [{ nom: "Alex Martin", initiales: "AM", date: "2026-11-20" }],
+    },
+    { webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" },
+  );
+  assert.match(requetes[0].sql, /ON DUPLICATE KEY UPDATE/);
+  assert.match(requetes[0].sql, /COALESCE\(VALUES\(sharepoint_url\), sharepoint_url\)/);
+  assert.equal(requetes[0].params[0], "par5-ab12cd34");
+  assert.equal(requetes[0].params[10].includes("ne-pas-garder"), false);
+  assert.equal(requetes[0].params[10].includes("Harnais"), true);
+});
+
+test("écrit la fiche dans MySQL avant et après le dépôt SharePoint", async () => {
+  const etapes = [];
   const app = createApp({
-    env: { ...configuredEnv, MYSQL_HOST: "db.example", MYSQL_USER: "par5_app", MYSQL_DATABASE: "par5" },
-    uploadPdf: async () => ({ webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" }),
+    env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
+    uploadPdf: async () => {
+      etapes.push("pdf");
+      return { webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" };
+    },
+    enregistrerFiche: async (recue, fichier) => {
+      etapes.push(fichier?.webUrl || "base");
+      assert.equal(recue.lignes.length, 1);
+      return { ecrit: true };
+    },
+  });
+  await withServer(app, async (base) => {
+    const response = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        fiche({
+          lignes: [{ risqueId: "chute", present: "oui", moyens: "Harnais", responsable: "AM", realise: true }],
+          travailleurs: [{ nom: "Alex Martin", initiales: "AM", date: "2026-11-20" }],
+        }),
+      ),
+    });
+    assert.equal(response.status, 201);
+    assert.deepEqual(etapes, ["base", "pdf", "https://genitique.sharepoint.com/fiche"]);
+  });
+});
+
+test("un échec MySQL laisse la fiche réessayable sans déposer le PDF", async () => {
+  let depots = 0;
+  const app = createApp({
+    env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
+    uploadPdf: async () => {
+      depots += 1;
+      return { webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" };
+    },
+    enregistrerFiche: async () => {
+      throw new Error("connexion refusée");
+    },
   });
   await withServer(app, async (base) => {
     const response = await fetch(`${base}/api/par5`, {
@@ -112,7 +181,10 @@ test("un MySQL renseigné ne bloque pas le dépôt", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fiche()),
     });
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.retryable, true);
+    assert.equal(depots, 0);
   });
 });
 

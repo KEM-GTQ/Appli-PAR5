@@ -201,6 +201,32 @@ export function donneesPar5Vides(): DonneesPar5 {
   }
 }
 
+/** Fiche complète pour essayer l'enregistrement et le dépôt, sans rien inventer sur le chantier. */
+const EXEMPLE_PRESENTS = new Set(['electriques', 'chute', 'coactivite'])
+
+export function donneesPar5Exemple(dateJour: string): DonneesPar5 {
+  const vides = donneesPar5Vides()
+  return {
+    noProjet: 'HQC26-075',
+    installation: 'Poste St-François',
+    emplacement: 'Salle de commande',
+    tache: 'Remplacement d’une cellule de disjoncteur',
+    lignes: vides.lignes.map((l) => {
+      const risque = RISQUES.find((r) => r.id === l.risqueId)
+      if (!EXEMPLE_PRESENTS.has(l.risqueId)) return { ...l, present: 'non' }
+      return {
+        ...l,
+        present: 'oui',
+        specification: 'Exemple — à relire avant de signer.',
+        moyens: (risque?.moyens ?? 'Cadenassage et EPI.').slice(0, 220),
+        responsable: 'Alex Martin',
+        realise: true
+      }
+    }),
+    travailleurs: [{ nom: 'Alex Martin', initiales: 'AM', date: dateJour }]
+  }
+}
+
 // ------------------------------------------------------------------ //
 //  CONTRÔLE D'EXHAUSTIVITÉ avant transmission                         //
 // ------------------------------------------------------------------ //

@@ -37,6 +37,8 @@ import { compresserPhoto, ko, poids, BUDGET_PHOTOS, PhotoTropLourde } from '@/da
 export interface Ouverture {
   donnees: DonneesPar5
   id?: string
+  /** Remplissage d'exemple, pas une fiche d'hier à relire. */
+  exemple?: boolean
 }
 
 interface Props {
@@ -73,6 +75,7 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
   const [ouvert, setOuvert] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [messageTon, setMessageTon] = useState<'ok' | 'warn'>('ok')
+  const [depotEnCours, setDepotEnCours] = useState(false)
   /** Écran de contrôle avant transmission — `null` tant qu'on ne l'a pas levé. */
   const [controle, setControle] = useState<Manque[] | null>(null)
   /** Risque dont la photo est en cours de compression (le bouton attend). */
@@ -88,7 +91,11 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
     setOuvert(null)
     setControle(null)
     setMessage(
-      reprise.id ? '' : 'Fiche reprise. Relisez les 16 réponses : le chantier a pu changer.'
+      reprise.exemple
+        ? 'Fiche d’exemple. Enregistrer la dépose dans SharePoint.'
+        : reprise.id
+          ? ''
+          : 'Fiche reprise. Relisez les 16 réponses : le chantier a pu changer.'
     )
     /* Une fiche ENREGISTREE qu'on rouvre est propre ; une fiche DUPLIQUEE
        (sans id) est du travail neuf, donc non enregistre des la seconde ou
@@ -279,15 +286,29 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
 
   async function enregistrer(): Promise<void> {
     setPropre(true)
+    setDepotEnCours(true)
     const r = await enregistrerPar5(d, idCourant)
     setIdCourant(r.id)
-    setMessageTon(r.persiste ? 'ok' : 'warn')
-    setMessage(
-      r.persiste
-        ? 'Fiche enregistrée sur ' + (surPoste ? 'ce poste' : 'le téléphone') + '.'
-        : 'Enregistrement impossible (mémoire pleine).'
-    )
-    if (r.persiste) window.setTimeout(onEnregistre, 700)
+    if (!r.persiste) {
+      setDepotEnCours(false)
+      setMessageTon('warn')
+      setMessage('Enregistrement impossible (mémoire pleine).')
+      return
+    }
+    /* Enregistrer dépose le PDF. Le bouton « Enregistrer le PDF » reste le
+       geste qui ouvre le partage ou « Enregistrer sous » sur l'appareil. */
+    try {
+      const pdf = construirePdfPar5(d, r.dateISO)
+      const depot = await deposerPar5(r, await pdf.blob.arrayBuffer())
+      setMessageTon(depot.alerte ? 'warn' : 'ok')
+      setMessage(`Fiche enregistrée sur ce téléphone. ${depot.texte}`)
+      if (!depot.alerte) window.setTimeout(onEnregistre, 900)
+    } catch (e) {
+      setMessageTon('warn')
+      setMessage('PDF impossible à déposer : ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setDepotEnCours(false)
+    }
   }
 
   return (
@@ -612,10 +633,11 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
           </button>
           <button
             type="button"
-            onClick={enregistrer}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gtq-bleu px-3 py-3.5 text-[15px] font-semibold encre-pastille"
+            onClick={() => void enregistrer()}
+            disabled={depotEnCours}
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gtq-bleu px-3 py-3.5 text-[15px] font-semibold encre-pastille disabled:opacity-60"
           >
-            <Save size={18} aria-hidden="true" /> Enregistrer
+            <Save size={18} aria-hidden="true" /> {depotEnCours ? 'Dépôt…' : 'Enregistrer'}
           </button>
           <button
             type="button"

@@ -2,18 +2,28 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createApp } from "./app.js";
-import { isDatabaseConfigured } from "./mysql.js";
+import { createPool, ensureSchema, isDatabaseConfigured } from "./mysql.js";
 import { isSharePointConfigured } from "./sharepoint.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 dotenv.config({ path: path.join(repoRoot, ".env") });
 
 const port = Number(process.env.PORT || 3001);
-console.log(
-  `MySQL ${isDatabaseConfigured(process.env) ? "renseigné, écriture inactive" : "non configuré"}; SharePoint ${isSharePointConfigured(process.env) ? "configuré" : "non configuré"}`,
-);
+const pool = isDatabaseConfigured(process.env) ? createPool(process.env) : null;
 
-const server = createApp({ env: process.env }).listen(port, () => {
+if (pool) {
+  try {
+    await ensureSchema(pool);
+    console.log("MySQL connecté, table par5_fiches prête.");
+  } catch (error) {
+    console.error(`MySQL injoignable : ${error.message}`);
+  }
+} else {
+  console.log("MySQL non configuré.");
+}
+console.log(`SharePoint ${isSharePointConfigured(process.env) ? "configuré" : "non configuré"}.`);
+
+const server = createApp({ env: process.env, pool }).listen(port, () => {
   console.log(`API à l'écoute sur http://localhost:${port}`);
 });
 

@@ -33,8 +33,8 @@ self.addEventListener("message", (event) => {
 self.addEventListener("sync", (event) => {
   if (event.tag !== "par5-sync") return;
   event.waitUntil(
-    flushPending().then((result) => {
-      if (result?.offline) throw new Error("Des PAR 5 attendent une connexion.");
+    flushPending(true).then((result) => {
+      if (result?.remaining) throw new Error("Des PAR 5 restent à déposer.");
     }),
   );
 });

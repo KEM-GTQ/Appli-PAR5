@@ -58,7 +58,39 @@ export function validateFiche(body) {
     tache: optionalString(body.tache, "tache", 300),
     dateISO: requiredDate(body.dateISO, "dateISO"),
     majISO: body.majISO ? requiredDate(body.majISO, "majISO") : null,
+    lignes: normaliserLignes(body.lignes),
+    travailleurs: normaliserTravailleurs(body.travailleurs),
     pdfName: nomPdf(id),
     pdf: decodePdf(body.pdfBase64),
   };
+}
+
+function normaliserLignes(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 32) throw new ValidationError("lignes invalides.");
+  return value.map((ligne, index) => {
+    if (!ligne || typeof ligne !== "object") throw new ValidationError("lignes invalides.");
+    const present = ligne.present === "oui" || ligne.present === "non" ? ligne.present : null;
+    return {
+      risqueId: optionalString(ligne.risqueId, `lignes[${index}].risqueId`, 40),
+      present,
+      specification: optionalString(ligne.specification, `lignes[${index}].specification`, 2000),
+      moyens: optionalString(ligne.moyens, `lignes[${index}].moyens`, 4000),
+      responsable: optionalString(ligne.responsable, `lignes[${index}].responsable`, 200),
+      realise: ligne.realise === true,
+    };
+  });
+}
+
+function normaliserTravailleurs(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 30) throw new ValidationError("travailleurs invalides.");
+  return value.map((travailleur, index) => {
+    if (!travailleur || typeof travailleur !== "object") throw new ValidationError("travailleurs invalides.");
+    return {
+      nom: optionalString(travailleur.nom, `travailleurs[${index}].nom`, 200),
+      initiales: optionalString(travailleur.initiales, `travailleurs[${index}].initiales`, 20),
+      date: optionalString(travailleur.date, `travailleurs[${index}].date`, 40),
+    };
+  });
 }
