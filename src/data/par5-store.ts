@@ -42,6 +42,8 @@ export interface Par5Enregistre {
   erreur?: string | null
   sharePointUrl?: string | null
   reessayable?: boolean
+  /** Compte Microsoft associé au moment du dépôt. */
+  auteur?: string | null
 }
 
 const CLE = 'gtq-par5'
@@ -58,7 +60,8 @@ function resume(fiche: FicheStockee): Par5Enregistre {
     statut: fiche.statut,
     erreur: fiche.erreur,
     sharePointUrl: fiche.sharePointUrl,
-    reessayable: fiche.reessayable
+    reessayable: fiche.reessayable,
+    auteur: fiche.auteur
   }
 }
 
@@ -212,7 +215,8 @@ export async function enregistrerPar5(
     reessayable: false,
     erreur: null,
     sharePointUrl: existante?.sharePointUrl ?? null,
-    deposeISO: existante?.deposeISO ?? null
+    deposeISO: existante?.deposeISO ?? null,
+    auteur: existante?.auteur ?? null
   }
   try {
     await mettreFiche(rec)

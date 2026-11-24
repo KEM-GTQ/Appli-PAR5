@@ -52,7 +52,7 @@ export function validateFiche(body) {
 
   return {
     id,
-    noProjet: optionalString(body.noProjet, "noProjet", 80),
+    noProjet: optionalString(body.noProjet, "noProjet", 255),
     installation: optionalString(body.installation, "installation", 200),
     emplacement: optionalString(body.emplacement, "emplacement", 200),
     tache: optionalString(body.tache, "tache", 300),

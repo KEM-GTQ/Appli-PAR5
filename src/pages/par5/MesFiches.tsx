@@ -133,10 +133,13 @@ export function MesFiches({
                 ) : (
                   'Dans SharePoint'
                 )}
+                {f.auteur ? ` · ${f.auteur}` : ''}
               </p>
             )}
             {f.statut === 'attente' && (
-              <p className="mt-1 text-[12px] text-gtq-texte2">En attente de SharePoint</p>
+              <p className="mt-1 text-[12px] text-gtq-texte2">
+                {f.erreur || 'En attente de SharePoint'}
+              </p>
             )}
             {f.statut === 'envoi' && (
               <p className="mt-1 text-[12px] text-gtq-texte2">Dépôt en cours</p>

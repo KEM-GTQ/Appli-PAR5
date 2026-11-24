@@ -216,6 +216,70 @@ test("refuse une fiche sans PDF", async () => {
   });
 });
 
+test("refuse le dépôt tant que le jeton Entra manque", async () => {
+  let depots = 0;
+  const app = createApp({
+    env: { ...configuredEnv, ENTRA_TENANT_ID: "tenant", ENTRA_API_AUDIENCE: "api://par5" },
+    verifierJeton: async () => {
+      throw new Error("signature");
+    },
+    uploadPdf: async () => {
+      depots += 1;
+      return { webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" };
+    },
+  });
+  await withServer(app, async (base) => {
+    const sans = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fiche()),
+    });
+    assert.equal(sans.status, 401);
+    const corps = await sans.json();
+    assert.equal(corps.code, "auth");
+    assert.equal(corps.retryable, true);
+    const mauvais = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer mauvais" },
+      body: JSON.stringify(fiche()),
+    });
+    assert.equal(mauvais.status, 401);
+    assert.equal(depots, 0);
+  });
+});
+
+test("retient le compte Entra qui dépose la fiche", async () => {
+  const auteurs = [];
+  const app = createApp({
+    env: {
+      ...configuredEnv,
+      ENTRA_TENANT_ID: "tenant",
+      ENTRA_API_AUDIENCE: "api://par5",
+      MYSQL_HOST: "localhost",
+      MYSQL_USER: "root",
+      MYSQL_DATABASE: "par5",
+    },
+    verifierJeton: async (token) => {
+      assert.equal(token, "jeton-alex");
+      return { preferred_username: "alex@genitique.com", name: "Alex Martin", oid: "oid-1" };
+    },
+    uploadPdf: async () => ({ webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" }),
+    enregistrerFiche: async (recue) => {
+      auteurs.push(recue.auteur);
+      return { ecrit: true };
+    },
+  });
+  await withServer(app, async (base) => {
+    const response = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer jeton-alex" },
+      body: JSON.stringify(fiche()),
+    });
+    assert.equal(response.status, 201);
+    assert.deepEqual(auteurs, ["alex@genitique.com", "alex@genitique.com"]);
+  });
+});
+
 test("la santé signale SharePoint sans prétendre que MySQL écrit", async () => {
   const app = createApp({ env: configuredEnv });
   await withServer(app, async (base) => {
@@ -225,5 +289,6 @@ test("la santé signale SharePoint sans prétendre que MySQL écrit", async () =
     assert.equal(body.sharePointConfigured, true);
     assert.equal(body.databaseConfigured, false);
     assert.equal(body.databaseOk, false);
+    assert.equal(body.authRequired, false);
   });
 });

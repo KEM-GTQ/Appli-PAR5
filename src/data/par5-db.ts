@@ -23,6 +23,8 @@ export interface FicheStockee {
   erreur: string | null
   sharePointUrl: string | null
   deposeISO: string | null
+  /** Compte Microsoft qui a déposé la fiche. Vide tant que l'envoi n'a pas abouti. */
+  auteur?: string | null
 }
 
 interface BasePar5 extends DBSchema {

@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client'
 import { registerSW } from 'virtual:pwa-register'
 import './main.css'
 import { App } from './App'
+import { jetonApi, preparerAuth } from './data/auth-par5'
+import { brancherJeton } from './data/sync-par5'
 import { appliquerTheme, lireTheme } from './data/theme'
 
 /* L'agent de service n'existe que dans la version hébergée. Le fichier unique
@@ -14,9 +16,12 @@ if (__PWA__ && 'serviceWorker' in navigator && location.protocol.startsWith('htt
 /* Le thème est posé AVANT le premier rendu : sinon l'app clignote en sombre
    une fraction de seconde avant de passer en clair. */
 appliquerTheme(lireTheme())
+brancherJeton(jetonApi)
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
+void preparerAuth().finally(() => {
+  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  )
+})

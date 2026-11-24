@@ -32,11 +32,33 @@ function avecVerrou<T>(tache: () => Promise<T>): Promise<T> {
   return cours
 }
 
-function entetes(): HeadersInit {
+const BALISE_REAUTH = 'par5-reauth'
+
+type FournisseurJeton = () => Promise<{ token: string; auteur: string } | { pause: string; reauth: boolean }>
+
+let fournisseurJeton: FournisseurJeton | null = null
+
+/** Branché par la page, jamais par l'agent de service : lui n'a pas de fenêtre pour renouveler la session. */
+export function brancherJeton(fn: FournisseurJeton): void {
+  fournisseurJeton = fn
+}
+
+function authConfiguree(): boolean {
+  return Boolean(import.meta.env.VITE_ENTRA_CLIENT_ID && import.meta.env.VITE_ENTRA_TENANT_ID)
+}
+
+async function entetes(): Promise<{ entete: HeadersInit; auteur: string } | { pause: string; reauth: boolean }> {
   const entete: Record<string, string> = { 'Content-Type': 'application/json' }
   const cle = import.meta.env.VITE_API_KEY
   if (cle) entete['X-API-Key'] = cle
-  return entete
+  if (!authConfiguree() || location.protocol === 'file:') return { entete, auteur: '' }
+  if (!fournisseurJeton) {
+    return { pause: 'Session Microsoft requise pour envoyer la fiche.', reauth: true }
+  }
+  const jeton = await fournisseurJeton()
+  if ('pause' in jeton) return jeton
+  if (jeton.token) entete.Authorization = `Bearer ${jeton.token}`
+  return { entete, auteur: jeton.auteur }
 }
 
 function adresse(chemin: string): string {
@@ -96,10 +118,38 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
   await patchFiche(fiche.id, { statut: 'envoi', erreur: null })
   await prevenir()
 
+  let entete: HeadersInit
+  let auteur = ''
+  try {
+    const obtenu = await entetes()
+    if ('pause' in obtenu) {
+      await patchFiche(fiche.id, {
+        statut: 'attente',
+        reessayable: true,
+        erreur: obtenu.pause
+      })
+      if (obtenu.reauth && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(BALISE_REAUTH))
+      }
+      await prevenir()
+      return false
+    }
+    entete = obtenu.entete
+    auteur = obtenu.auteur
+  } catch {
+    await patchFiche(fiche.id, {
+      statut: 'attente',
+      reessayable: true,
+      erreur: 'En attente d’une connexion.'
+    })
+    await prevenir()
+    return false
+  }
+
   try {
     const reponse = await fetch(adresse('/api/par5'), {
       method: 'POST',
-      headers: entetes(),
+      headers: entete,
       cache: 'no-store',
       body: JSON.stringify({
         id: fiche.id,
@@ -121,7 +171,14 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
         pdfBase64: enBase64(fiche.pdf)
       })
     })
-    let corps: { id?: string; error?: string; retryable?: boolean; sharePointUrl?: string | null; syncedAt?: string } = {}
+    let corps: {
+      id?: string
+      error?: string
+      retryable?: boolean
+      code?: string
+      sharePointUrl?: string | null
+      syncedAt?: string
+    } = {}
     try {
       corps = await reponse.json()
     } catch {
@@ -133,10 +190,21 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
         reessayable: false,
         erreur: null,
         sharePointUrl: corps.sharePointUrl || null,
-        deposeISO: corps.syncedAt || new Date().toISOString()
+        deposeISO: corps.syncedAt || new Date().toISOString(),
+        auteur: auteur || null
       })
       await prevenir()
       return true
+    }
+    if (corps.code === 'auth') {
+      await patchFiche(fiche.id, {
+        statut: 'attente',
+        reessayable: true,
+        erreur: typeof corps.error === 'string' ? corps.error : 'Session expirée. Reconnectez-vous pour envoyer la fiche.'
+      })
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(BALISE_REAUTH))
+      await prevenir()
+      return false
     }
     const reessayable = reponse.ok || (typeof corps.retryable === 'boolean' ? corps.retryable : reponse.status >= 500)
     await patchFiche(fiche.id, {
@@ -158,6 +226,11 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
 }
 
 async function vider(forcer = false): Promise<{ remaining: number; offline: boolean }> {
+  /* L'agent de service ne peut pas renouveler une session Microsoft. Il laisse la file à la page. */
+  if (authConfiguree() && typeof window === 'undefined') {
+    const enAttente = await fichesADeposer()
+    return { remaining: enAttente.length, offline: false }
+  }
   if (!forcer && typeof navigator !== 'undefined' && navigator.onLine === false) {
     const enAttente = await fichesADeposer()
     return { remaining: enAttente.length, offline: enAttente.length > 0 }
@@ -170,6 +243,11 @@ async function vider(forcer = false): Promise<{ remaining: number; offline: bool
     if (!deposee) remaining += 1
   }
   return { remaining, offline: false }
+}
+
+export async function aDesFichesADeposer(): Promise<boolean> {
+  const fiches = await fichesADeposer()
+  return fiches.length > 0
 }
 
 export async function flushPending(forcer = false): Promise<{ remaining: number; offline?: boolean }> {
@@ -211,7 +289,7 @@ export async function deposerPar5(
   const bilan = await flushPending()
   const etat = await lireFiche(fiche.id)
   if (etat?.statut === 'depose') return { texte: 'PDF déposé dans SharePoint.', alerte: false }
-  if (etat?.statut === 'erreur') {
+  if (etat?.statut === 'erreur' || (etat?.statut === 'attente' && etat.erreur)) {
     return { texte: etat.erreur || 'Dépôt SharePoint impossible.', alerte: true }
   }
   if (bilan.offline) {

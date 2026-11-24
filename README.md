@@ -5,10 +5,15 @@ Application **téléphone** permettant aux travailleurs de remplir sur place le
 de le signer et de le transmettre en PDF.
 
 La fiche et son PDF sont produits sur le téléphone et gardés dans IndexedDB.
-Dès que l'appareil joint l'API, celle-ci dépose le PDF dans SharePoint et
-écrit la fiche dans MySQL. Le téléphone ne voit ni le secret Microsoft, ni
-le mot de passe MySQL. Un nouvel envoi de la même fiche écrase le fichier
-SharePoint et met à jour la même ligne, au lieu d'en créer une seconde.
+Le travailleur peut remplir et enregistrer un ou plusieurs PAR 5 sans réseau et
+sans session Microsoft. La connexion (Entra ID, code d'autorisation et PKCE) n'est
+demandée que pour l'envoi : au retour du réseau, l'application propose le compte
+professionnel, conserve les fiches déjà enregistrées, puis l'API dépose chaque PDF
+dans SharePoint et écrit la fiche dans MySQL au nom de ce compte. Ces fiches
+apparaissent dans Mes fiches. Si la connexion ou l'envoi échoue, elles restent sur
+le téléphone jusqu'à la réussite. Le téléphone n'a pas de secret Microsoft et ne
+peut pas écrire dans SharePoint lui-même. Un nouvel envoi de la même fiche écrase
+le fichier et met à jour la même ligne.
 
 Le fichier HTML unique posé sur le Bureau ne peut pas déposer dans SharePoint.
 C'est la version hébergée (`dist-web/`) qui le fait.

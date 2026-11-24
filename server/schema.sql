@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS par5_fiches (
   id VARCHAR(16) NOT NULL,
-  no_projet VARCHAR(80) NOT NULL,
+  no_projet VARCHAR(255) NOT NULL,
   installation VARCHAR(200) NOT NULL,
   emplacement VARCHAR(200) NOT NULL,
   tache VARCHAR(300) NOT NULL,
@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS par5_fiches (
   sharepoint_item_id VARCHAR(128) NULL,
   lignes JSON NOT NULL,
   travailleurs JSON NOT NULL,
+  auteur VARCHAR(320) NULL,
   PRIMARY KEY (id)
 );
 

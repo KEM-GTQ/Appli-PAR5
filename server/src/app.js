@@ -8,6 +8,8 @@ import {
   uploadPdf as uploadPdfToSharePoint,
 } from "./sharepoint.js";
 import { validateFiche } from "./validate.js";
+import { isEntraConfigured, verifierEntra } from "./entra.js";
+import { listerProjets as lireProjetsSharePoint } from "./projets.js";
 
 function asyncRoute(handler) {
   return (req, res, next) => {
@@ -34,6 +36,8 @@ export function createApp({
   uploadPdf = uploadPdfToSharePoint,
   pool = null,
   enregistrerFiche = null,
+  verifierJeton = null,
+  listerProjets = null,
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -49,7 +53,7 @@ export function createApp({
     if (origine && permises.includes(origine)) {
       res.set("Access-Control-Allow-Origin", origine);
       res.set("Vary", "Origin");
-      res.set("Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+      res.set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization");
       res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     }
     if (req.method === "OPTIONS") {
@@ -58,6 +62,30 @@ export function createApp({
     }
     next();
   });
+
+  const verifier = verifierJeton || (isEntraConfigured(env) ? verifierEntra(env) : null);
+
+  function requireUser(req, res, next) {
+    if (!verifier) return next();
+    const entete = req.get("Authorization") || "";
+    const token = entete.startsWith("Bearer ") ? entete.slice("Bearer ".length).trim() : "";
+    if (!token) {
+      res.status(401).json({ error: "Connexion Microsoft requise.", retryable: true, code: "auth" });
+      return;
+    }
+    Promise.resolve()
+      .then(() => verifier(token))
+      .then((compte) => {
+        req.user = compte;
+        next();
+      })
+      .catch((error) => {
+        console.error(`Jeton refusé : ${error.message}`);
+        if (!res.headersSent) {
+          res.status(401).json({ error: "Session Microsoft expirée.", retryable: true, code: "auth" });
+        }
+      });
+  }
 
   function requireApiKey(req, res, next) {
     if (!env.API_KEY) return next();
@@ -84,6 +112,7 @@ export function createApp({
       databaseConfigured: isDatabaseConfigured(env),
       databaseOk,
       sharePointConfigured: isSharePointConfigured(env),
+      authRequired: Boolean(verifier),
     });
   }));
 
@@ -98,8 +127,21 @@ export function createApp({
     }
   }
 
-  app.post("/api/par5", requireApiKey, asyncRoute(async (req, res) => {
+  /* La liste sert à remplir la fiche, y compris avant la connexion Microsoft.
+     Le dépôt, lui, reste protégé. */
+  app.get("/api/projets", asyncRoute(async (req, res) => {
+    if (!isSharePointConfigured(env)) {
+      throw new HttpError("SharePoint n'est pas configuré.", 503, true);
+    }
+    const lire = listerProjets || lireProjetsSharePoint;
+    const projets = await lire(env);
+    res.json({ projets });
+  }));
+
+  app.post("/api/par5", requireUser, requireApiKey, asyncRoute(async (req, res) => {
     const fiche = validateFiche(req.body);
+    const auteur = req.user?.preferred_username || req.user?.name || "";
+    fiche.auteur = auteur.slice(0, 320);
     const missing = missingSettings(env);
     if (missing.length) {
       console.error(`Dépôt non configuré. Manque : ${missing.join(", ")}`);

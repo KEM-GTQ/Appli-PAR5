@@ -27,6 +27,7 @@ import { enregistrerPar5, poidsPhotos } from '@/data/par5-store'
 import { construirePdfPar5, envoyerPdf, peutChoisirDossier } from '@/data/pdf-par5'
 import { deposerPar5 } from '@/data/sync-par5'
 import { compresserPhoto, ko, poids, BUDGET_PHOTOS, PhotoTropLourde } from '@/data/photo'
+import { ChoixProjet } from '@/components/ChoixProjet'
 
 /**
  * Ce que le formulaire ouvre : soit une fiche existante (avec son `id`, on la
@@ -315,15 +316,16 @@ export function Par5Form({ reprise, onRepriseConsommee, onEnregistre, onEnCours 
     <div className="px-4 pb-40 pt-4">
       {/* ---------------------------------------------------- le chantier */}
       <Bloc titre="Le chantier">
-        <Champ libelle="No de projet">
-          <input
-            type="text"
-            inputMode="text"
-            value={d.noProjet}
-            onChange={(e) => setD({ ...d, noProjet: e.target.value })}
-            placeholder="HQC26-075"
+        <div>
+          <label htmlFor="no-projet" className="mb-1.5 block text-[13px] font-medium text-gtq-texte2">
+            No de projet
+          </label>
+          <ChoixProjet
+            id="no-projet"
+            valeur={d.noProjet}
+            onChoisir={(noProjet) => setD({ ...d, noProjet })}
           />
-        </Champ>
+        </div>
         <Champ libelle="Installation">
           <input
             type="text"

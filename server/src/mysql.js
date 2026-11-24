@@ -28,7 +28,7 @@ export function createPool(env) {
 const CREER_TABLE = `
 CREATE TABLE IF NOT EXISTS par5_fiches (
   id VARCHAR(16) NOT NULL,
-  no_projet VARCHAR(80) NOT NULL,
+  no_projet VARCHAR(255) NOT NULL,
   installation VARCHAR(200) NOT NULL,
   emplacement VARCHAR(200) NOT NULL,
   tache VARCHAR(300) NOT NULL,
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS par5_fiches (
   sharepoint_item_id VARCHAR(128) NULL,
   lignes JSON NOT NULL,
   travailleurs JSON NOT NULL,
+  auteur VARCHAR(320) NULL,
   PRIMARY KEY (id)
 )`;
 
@@ -61,6 +62,10 @@ export async function ensureSchema(pool) {
   if (!(await aColonne(pool, "travailleurs"))) {
     await pool.query("ALTER TABLE par5_fiches ADD COLUMN travailleurs JSON NOT NULL");
   }
+  if (!(await aColonne(pool, "auteur"))) {
+    await pool.query("ALTER TABLE par5_fiches ADD COLUMN auteur VARCHAR(320) NULL");
+  }
+  await pool.query("ALTER TABLE par5_fiches MODIFY no_projet VARCHAR(255) NOT NULL");
 }
 
 function versMysql(iso) {
@@ -81,8 +86,8 @@ export async function enregistrerFiche(pool, fiche, uploaded) {
     `INSERT INTO par5_fiches (
        id, no_projet, installation, emplacement, tache,
        date_analyse, maj, depose_le, nom_pdf,
-       sharepoint_url, sharepoint_item_id, lignes, travailleurs
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), ?, ?, ?, ?, ?)
+       sharepoint_url, sharepoint_item_id, lignes, travailleurs, auteur
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        no_projet = VALUES(no_projet),
        installation = VALUES(installation),
@@ -95,7 +100,8 @@ export async function enregistrerFiche(pool, fiche, uploaded) {
        sharepoint_url = COALESCE(VALUES(sharepoint_url), sharepoint_url),
        sharepoint_item_id = COALESCE(VALUES(sharepoint_item_id), sharepoint_item_id),
        lignes = VALUES(lignes),
-       travailleurs = VALUES(travailleurs)`,
+       travailleurs = VALUES(travailleurs),
+       auteur = COALESCE(VALUES(auteur), auteur)`,
     [
       fiche.id,
       fiche.noProjet,
@@ -109,6 +115,7 @@ export async function enregistrerFiche(pool, fiche, uploaded) {
       uploaded?.itemId || null,
       JSON.stringify(lignes),
       JSON.stringify(fiche.travailleurs || []),
+      fiche.auteur || null,
     ],
   );
   return { ecrit: true };

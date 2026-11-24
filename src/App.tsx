@@ -8,7 +8,8 @@ import { Par5Form, type Ouverture } from './pages/par5/Par5Form'
 import { MesFiches } from './pages/par5/MesFiches'
 import { Definitions } from './pages/par5/Definitions'
 import { dupliquerPar5, ouvrirStockage, type Par5Enregistre } from './data/par5-store'
-import { flushPending, inscrireSyncArrierePlan } from './data/sync-par5'
+import { authRequise, compteActif, connecter, preparerAuth } from './data/auth-par5'
+import { aDesFichesADeposer, flushPending, inscrireSyncArrierePlan } from './data/sync-par5'
 import { appliquerTheme, lireTheme, type Theme } from './data/theme'
 
 /**
@@ -42,7 +43,13 @@ export function App() {
   /** Ligne d'état du dépôt. Vide quand tout va bien : l'écran reste celui du PAR 5. */
   const [annonce, setAnnonce] = useState<string | null>(null)
   const [connecte, setConnecte] = useState(() => navigator.onLine)
+  const [compte, setCompte] = useState<string | null>(null)
+  const [reauth, setReauth] = useState(false)
   const stockageBloque = useRef(false)
+  const enCoursRef = useRef(false)
+  const reauthRef = useRef(false)
+  enCoursRef.current = enCours
+  reauthRef.current = reauth
 
   function basculerTheme(): void {
     const t: Theme = theme === 'sombre' ? 'clair' : 'sombre'
@@ -97,11 +104,11 @@ export function App() {
         if (!reponse.ok) throw new Error('sante')
         const corps = (await reponse.json()) as { sharePointConfigured?: boolean }
         if (annule || stockage.current) return
-        setAnnonce(
-          corps.sharePointConfigured
-            ? null
-            : 'SharePoint n’est pas configuré. Les fiches restent sur ce téléphone.'
-        )
+        if (!corps.sharePointConfigured) {
+          setAnnonce('SharePoint n’est pas configuré. Les fiches restent sur ce téléphone.')
+        } else if (!reauthRef.current) {
+          setAnnonce(null)
+        }
       } catch {
         if (!annule && !stockage.current) {
           setAnnonce('Le serveur ne répond pas. Les fiches restent sur ce téléphone.')
@@ -112,21 +119,48 @@ export function App() {
     function enLigne(): void {
       setConnecte(true)
       if (stockage.current) return
-      setAnnonce(null)
       void sante()
       void inscrireSyncArrierePlan()
+      if (authRequise() && !compteActif()) {
+        setReauth(true)
+        void aDesFichesADeposer().then((enAttente) => {
+          if (!enAttente) {
+            setAnnonce(null)
+            return
+          }
+          setAnnonce('Connexion au réseau. Connectez-vous pour envoyer les fiches enregistrées sur ce téléphone.')
+          if (!enCoursRef.current) void connecter()
+        })
+        return
+      }
+      setAnnonce(null)
       void flushPending(true)
     }
 
     function horsLigne(): void {
       setConnecte(false)
-      if (!stockage.current) {
-        setAnnonce('Hors réseau. Les fiches restent sur ce téléphone et partent au retour de la connexion.')
-      }
+      if (stockage.current) return
+      setAnnonce(
+        authRequise() && !compteActif()
+          ? 'Hors réseau. Vous pouvez remplir des PAR 5. La connexion Microsoft sera demandée au retour du réseau.'
+          : 'Hors réseau. Les fiches restent sur ce téléphone et partent au retour de la connexion.'
+      )
     }
 
     function messageAgent(event: MessageEvent): void {
       if (event.data?.type === 'par5-sync') window.dispatchEvent(new CustomEvent('par5-sync'))
+    }
+
+    function demanderReauth(): void {
+      setReauth(true)
+      const actif = compteActif()
+      setCompte(actif?.nom ?? null)
+      if (!actif) {
+        setAnnonce('Connectez-vous avec votre compte Microsoft pour envoyer les fiches enregistrées sur ce téléphone.')
+        if (navigator.onLine && !enCoursRef.current) void connecter()
+        return
+      }
+      setAnnonce('Session Microsoft expirée. Les fiches restent sur ce téléphone jusqu’à la reconnexion.')
     }
 
     void ouvrirStockage().catch(() => {
@@ -136,7 +170,27 @@ export function App() {
       }
     })
 
-    if (location.protocol !== 'file:') {
+    void preparerAuth().then((erreurAuth) => {
+      if (annule) return
+      const actif = compteActif()
+      setCompte(actif?.nom ?? null)
+      if (erreurAuth) setAnnonce(erreurAuth)
+      if (authRequise() && !actif) {
+        setReauth(true)
+        if (!navigator.onLine) {
+          setAnnonce('Hors réseau. Vous pouvez remplir des PAR 5. La connexion Microsoft sera demandée au retour du réseau.')
+          return
+        }
+        if (erreurAuth) return
+        void aDesFichesADeposer().then((enAttente) => {
+          if (annule) return
+          if (!enAttente) return
+          setAnnonce('Connectez-vous pour envoyer les fiches enregistrées sur ce téléphone.')
+          if (!enCoursRef.current) void connecter()
+        })
+        return
+      }
+      if (location.protocol === 'file:') return
       if (navigator.onLine) {
         void sante()
         void inscrireSyncArrierePlan()
@@ -144,10 +198,11 @@ export function App() {
       } else {
         horsLigne()
       }
-    }
+    })
 
     window.addEventListener('online', enLigne)
     window.addEventListener('offline', horsLigne)
+    window.addEventListener('par5-reauth', demanderReauth)
     navigator.serviceWorker?.addEventListener('message', messageAgent)
     const timer = window.setInterval(() => {
       if (navigator.onLine) void sante()
@@ -158,6 +213,7 @@ export function App() {
       annule = true
       window.removeEventListener('online', enLigne)
       window.removeEventListener('offline', horsLigne)
+      window.removeEventListener('par5-reauth', demanderReauth)
       navigator.serviceWorker?.removeEventListener('message', messageAgent)
       window.clearInterval(timer)
     }
@@ -207,6 +263,21 @@ export function App() {
           {/* La barre reste noire dans les deux thèmes : ses encres sont donc
               posées en blanc littéral, pas avec les jetons qui basculent. */}
           <div className="ml-auto flex items-center gap-1">
+            {compte && (
+              <span className="max-w-16 truncate px-1 text-[12px] font-medium text-white/70" title={compte}>
+                {compte}
+              </span>
+            )}
+            {reauth && (
+              <button
+                type="button"
+                onClick={() => void connecter()}
+                disabled={!connecte}
+                className="flex h-9 items-center rounded-full px-2.5 text-[12px] font-semibold text-amber-300 disabled:opacity-50"
+              >
+                Connexion
+              </button>
+            )}
             <button
               type="button"
               onClick={remplirExemple}
