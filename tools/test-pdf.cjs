@@ -142,10 +142,10 @@ async function main() {
     'précisions + moyens'
   )
   verifier(
-    'le responsable et la réalisation sont notés',
-    texte.includes('Raphaël Gauthier') && /Moyens mis en place\s*:\s*OUI/.test(texte),
+    'un responsable déjà connu est noté, sans la case « mis en place »',
+    texte.includes('Raphaël Gauthier') && !/Moyens mis en place/.test(texte),
     '—',
-    'responsable + OUI'
+    'responsable, pas « mis en place »'
   )
   verifier('les deux travailleurs sont inscrits', texte.includes('Micha') && texte.includes('RG'))
   verifier('la pagination est présente', /Page 1 de \d+/.test(texte), texte.match(/Page \d+ de \d+/)?.[0])

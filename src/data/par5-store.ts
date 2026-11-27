@@ -6,6 +6,7 @@
  */
 import {
   RISQUES,
+  interpreterMoyens,
   ligneVide,
   type DonneesPar5,
   type LignePar5,
@@ -148,11 +149,18 @@ const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d)
 function normaliserLigne(risqueId: string, x: unknown): LignePar5 {
   const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>
   const present: Presence = o.present === 'oui' ? 'oui' : o.present === 'non' ? 'non' : null
+  const moyens = interpreterMoyens(risqueId, {
+    moyens: str(o.moyens),
+    moyensChoisis: Array.isArray(o.moyensChoisis)
+      ? o.moyensChoisis.filter((s): s is string => typeof s === 'string')
+      : undefined,
+    moyenAutre: typeof o.moyenAutre === 'string' ? o.moyenAutre : undefined
+  })
   return {
     risqueId,
     present,
     specification: str(o.specification),
-    moyens: str(o.moyens),
+    ...moyens,
     responsable: str(o.responsable),
     realise: o.realise === true,
     /* On n'accepte QUE des data URL d'image : une chaine quelconque venue
@@ -263,12 +271,10 @@ export function retouchee(p: Par5Enregistre): boolean {
  * temps, c'est de rendre a l'analyse une chance d'etre RELUE plutot que
  * retapee.
  *
- * Ce qui est repris : le chantier, les seize reponses, les moyens, les
- * responsables. Ce qui est REMIS A ZERO :
+ * Ce qui est repris : le chantier, les seize réponses, les moyens cochés.
+ * Ce qui est remis à zéro :
  *  · les dates de signature — on ne recopie pas la signature d'hier ;
- *  · « moyens mis en place » — c'est un constat du jour, il se refait ;
- *  · les photos — elles montraient le chantier d'hier, et les garder
- *    consommerait le budget memoire pour rien.
+ *  · les photos — le formulaire n'en joint plus.
  */
 export function dupliquerPar5(source: Par5Enregistre, dateJour: string): DonneesPar5 {
   const d = source.donnees
@@ -278,11 +284,9 @@ export function dupliquerPar5(source: Par5Enregistre, dateJour: string): Donnees
     emplacement: d.emplacement,
     tache: d.tache,
     lignes: d.lignes.map((l) => ({
-      risqueId: l.risqueId,
-      present: l.present,
-      specification: l.specification,
-      moyens: l.moyens,
-      responsable: l.responsable,
+      ...ligneVide(l.risqueId),
+      ...l,
+      ...interpreterMoyens(l.risqueId, l),
       realise: false,
       photo: undefined
     })),

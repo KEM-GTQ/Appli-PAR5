@@ -116,55 +116,6 @@ export function construirePdfPar5(d: DonneesPar5, dateISO = new Date().toISOStri
     }
   }
 
-  /**
-   * Colle la photo jointe a un risque.
-   *
-   * ⚠️ Deux precautions qui ne sont pas du zele :
-   *  · on lit les proportions REELLES de l'image (`getImageProperties`) au lieu
-   *    de supposer du paysage — une photo prise a la verticale, etiree dans un
-   *    cadre horizontal, ne montre plus rien ;
-   *  · tout est sous `try` : une data URL abimee ne doit pas empecher le PDF
-   *    de sortir. Le PAR 5 est le document ; la photo est une piece jointe. Si
-   *    la piece jointe casse, on imprime le document et on le DIT.
-   */
-  const photo = (dataUrl: string): void => {
-    const L_MAX = 78
-    const H_MAX = 58
-    let l = L_MAX
-    let h = H_MAX
-    try {
-      const p = doc.getImageProperties(dataUrl)
-      if (p.width > 0 && p.height > 0) {
-        const f = Math.min(L_MAX / p.width, H_MAX / p.height)
-        l = p.width * f
-        h = p.height * f
-      }
-    } catch {
-      /* proportions inconnues : on garde le cadre par defaut */
-    }
-
-    place(h + 10)
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(8.5)
-    doc.setTextColor(60)
-    doc.text('Photo', MARGE + 3, y)
-    y += 3.5
-
-    try {
-      doc.addImage(dataUrl, 'JPEG', MARGE + 3, y, l, h)
-      doc.setDrawColor(170)
-      doc.setLineWidth(0.2)
-      doc.rect(MARGE + 3, y, l, h)
-      y += h + 3
-    } catch {
-      doc.setFont('helvetica', 'italic')
-      doc.setFontSize(9)
-      doc.setTextColor(120)
-      doc.text('(photo jointe illisible)', MARGE + 3, y + 3)
-      y += 7
-    }
-  }
-
   /* ------------------------------------------------------------- en-tête */
   doc.setFillColor(0, 0, 0)
   doc.rect(0, 0, LARGEUR, 22, 'F')
@@ -183,7 +134,7 @@ export function construirePdfPar5(d: DonneesPar5, dateISO = new Date().toISOStri
   /* ------------------------------------------------------------ chantier */
   titre('Le chantier')
   champ('No de projet', d.noProjet)
-  champ('Installation', d.installation)
+  if (d.installation.trim()) champ('Installation', d.installation)
   champ('Emplacement', d.emplacement)
   champ('Tâche à exécuter', d.tache)
   y += 3
@@ -228,26 +179,30 @@ export function construirePdfPar5(d: DonneesPar5, dateISO = new Date().toISOStri
         paragraphe(l.specification, MARGE + 3, UTILE - 3)
         y += 2
       }
-      if (l.moyens) {
+      const morceaux = (l.moyens || '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      if (morceaux.length) {
         doc.setFont('helvetica', 'bold')
         doc.setFontSize(8.5)
         doc.text('Moyens de prévention', MARGE + 3, y)
         y += 4
         doc.setFont('helvetica', 'normal')
-        paragraphe(l.moyens, MARGE + 3, UTILE - 3)
-        y += 2
+        for (const morceau of morceaux) {
+          paragraphe('- ' + morceau, MARGE + 3, UTILE - 3)
+          y += 1
+        }
+        y += 1
       }
-      doc.setFontSize(9)
-      doc.setTextColor(20)
-      place(6)
-      borne(
-        `Responsable : ${l.responsable || '-'}     Moyens mis en place : ${l.realise ? 'OUI' : 'non'}`,
-        MARGE + 3,
-        UTILE - 3
-      )
-      y += 6
-      if (l.photo) photo(l.photo)
-      y += 4
+      if ((l.responsable || '').trim()) {
+        doc.setFontSize(9)
+        doc.setTextColor(20)
+        place(6)
+        borne(`Responsable : ${l.responsable}`, MARGE + 3, UTILE - 3)
+        y += 6
+      }
+      y += 2
     }
   }
 

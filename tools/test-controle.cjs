@@ -59,11 +59,10 @@ function charger(rel) {
   return m.exports
 }
 
-const { RISQUES, donneesPar5Vides, verifierPar5, bloquants } = charger('src/data/par5.ts')
+const { RISQUES, donneesPar5Vides, moyensDuCarnet, verifierPar5, bloquants } = charger('src/data/par5.ts')
 const store = charger('src/data/par5-store.ts')
 
 const durs = (d) => bloquants(verifierPar5(d))
-const doux = (d) => verifierPar5(d).filter((m) => m.gravite === 'avertissement')
 
 /** Une fiche irréprochable : seize « non », une tâche, un travailleur. */
 function ficheImpeccable() {
@@ -147,27 +146,22 @@ console.log('\n2. Ce qui ne doit PAS alerter à tort')
   const d = ficheImpeccable()
   d.lignes[2].present = 'oui'
   d.lignes[2].moyens = 'Cadenassage'
-  d.lignes[2].realise = true
-  const b = durs(d)
-  const a = doux(d)
+  d.lignes[2].realise = false
   verifier(
-    'responsable manquant : avertissement, pas bloquant',
-    b.length === 0 && a.some((x) => x.texte.includes('responsable')),
-    'bloquants=' + b.length + ' avertissements=' + JSON.stringify(a.map((x) => x.texte)),
-    '0 bloquant, 1 avertissement « responsable »'
+    'un moyen écrit suffit, sans responsable ni case « mis en place »',
+    verifierPar5(d).length === 0,
+    JSON.stringify(verifierPar5(d).map((x) => x.texte)),
+    '[]'
   )
 }
 {
-  const d = ficheImpeccable()
-  d.lignes[2].present = 'oui'
-  d.lignes[2].moyens = 'Cadenassage'
-  d.lignes[2].responsable = 'R. Gauthier'
-  d.lignes[2].realise = false
+  const bruit = RISQUES.find((r) => r.id === 'bruit')
   verifier(
-    'moyens pas encore en place : avertissement seulement',
-    durs(d).length === 0 && doux(d).some((x) => x.texte.includes('mis en place')),
-    JSON.stringify(verifierPar5(d)),
-    '0 bloquant, 1 avertissement « mis en place »'
+    'le bruit du carnet se découpe en trois cases',
+    moyensDuCarnet(bruit.moyens).length === 3 &&
+      moyensDuCarnet(bruit.moyens)[0].startsWith('Connaître le niveau de bruit'),
+    String(moyensDuCarnet(bruit.moyens).length),
+    '3'
   )
 }
 {

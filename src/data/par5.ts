@@ -14,8 +14,7 @@ export interface Risque {
   nom: string
   /** « Spécification du/des risque(s) présent(s) » — libellé de référence du carnet */
   description: string
-  /** Exemples de moyens de prévention (pages 4-6) — pour l'onglet Définitions et
-   *  l'insertion rapide dans le formulaire. */
+  /** Exemples de moyens de prévention (pages 4-6). Chaque phrase devient une case. */
   moyens: string
 }
 
@@ -160,14 +159,75 @@ export interface LignePar5 {
   present: Presence
   /** précisions sur le(s) risque(s) présent(s) */
   specification: string
-  /** moyens de prévention retenus */
+  /** Phrases du carnet cochées par le travailleur. */
+  moyensChoisis: string[]
+  /** Précision libre, sous la case « Autre ». */
+  moyenAutre: string
+  /** Texte repris pour le PDF et la base : cases cochées, puis « Autre ». */
   moyens: string
-  /** responsable (nom / titre) */
+  /** Ancien champ. Le formulaire ne le demande plus. */
   responsable: string
   realise: boolean
-  /** Photo jointe au risque present - data URL JPEG deja compressee. Une seule
-   *  par risque : voir le budget de memoire dans data/photo.ts. */
+  /** Ancienne photo. Le formulaire n'en ajoute plus. */
   photo?: string
+}
+
+/** Découpe les moyens du carnet en phrases, une case par phrase. */
+export function moyensDuCarnet(texte: string): string[] {
+  return texte
+    .split(/(?<=\.)\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+export function texteMoyens(choisis: string[], autre: string): string {
+  const lignes = choisis.map((s) => s.trim()).filter(Boolean)
+  const libre = autre.trim()
+  if (libre) lignes.push(libre)
+  return lignes.join('\n')
+}
+
+/**
+ * Relie une ligne déjà enregistrée aux cases du carnet.
+ * Une fiche ancienne n'a que le texte libre : on y reconnaît les phrases
+ * connues, et ce qui reste va dans « Autre ».
+ */
+export function interpreterMoyens(
+  risqueId: string,
+  l: Partial<LignePar5>
+): Pick<LignePar5, 'moyensChoisis' | 'moyenAutre' | 'moyens'> {
+  const catalogue = moyensDuCarnet(RISQUES.find((r) => r.id === risqueId)?.moyens ?? '')
+  const texte = (l.moyens ?? '').trim()
+  const autreDeja = typeof l.moyenAutre === 'string' ? l.moyenAutre : ''
+  const casesDeja = Array.isArray(l.moyensChoisis) ? l.moyensChoisis : null
+  /* Les cases vides d'une fiche neuve ne doivent pas effacer un ancien texte libre. */
+  if (casesDeja && (casesDeja.length > 0 || autreDeja.trim() || !texte)) {
+    const connus = new Set(catalogue)
+    const moyensChoisis = casesDeja.filter((s) => connus.has(s))
+    return { moyensChoisis, moyenAutre: autreDeja, moyens: texteMoyens(moyensChoisis, autreDeja) }
+  }
+  let reste = (l.moyens ?? '').trim()
+  const moyensChoisis = catalogue
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .filter((phrase) => {
+      if (!reste.includes(phrase)) return false
+      reste = reste.split(phrase).join(' ')
+      return true
+    })
+  const moyenAutre = reste.replace(/\s+/g, ' ').trim()
+  const ordre = catalogue.filter((phrase) => moyensChoisis.includes(phrase))
+  return { moyensChoisis: ordre, moyenAutre, moyens: texteMoyens(ordre, moyenAutre) }
+}
+
+export function completerDonnees(d: DonneesPar5): DonneesPar5 {
+  return {
+    ...d,
+    lignes: RISQUES.map((r) => {
+      const l = d.lignes.find((x) => x.risqueId === r.id) ?? ligneVide(r.id)
+      return { ...ligneVide(r.id), ...l, ...interpreterMoyens(r.id, l) }
+    })
+  }
 }
 
 export interface Travailleur {
@@ -187,7 +247,16 @@ export interface DonneesPar5 {
 }
 
 export function ligneVide(risqueId: string): LignePar5 {
-  return { risqueId, present: null, specification: '', moyens: '', responsable: '', realise: false }
+  return {
+    risqueId,
+    present: null,
+    specification: '',
+    moyensChoisis: [],
+    moyenAutre: '',
+    moyens: '',
+    responsable: '',
+    realise: false
+  }
 }
 
 export function donneesPar5Vides(): DonneesPar5 {
@@ -208,19 +277,22 @@ export function donneesPar5Exemple(dateJour: string): DonneesPar5 {
   const vides = donneesPar5Vides()
   return {
     noProjet: 'HQC26-075',
-    installation: 'Poste St-François',
+    installation: '',
     emplacement: 'Salle de commande',
     tache: 'Remplacement d’une cellule de disjoncteur',
     lignes: vides.lignes.map((l) => {
       const risque = RISQUES.find((r) => r.id === l.risqueId)
       if (!EXEMPLE_PRESENTS.has(l.risqueId)) return { ...l, present: 'non' }
+      const moyensChoisis = moyensDuCarnet(risque?.moyens ?? '').slice(0, 1)
       return {
         ...l,
         present: 'oui',
         specification: 'Exemple — à relire avant de signer.',
-        moyens: (risque?.moyens ?? 'Cadenassage et EPI.').slice(0, 220),
-        responsable: 'Alex Martin',
-        realise: true
+        moyensChoisis,
+        moyenAutre: '',
+        moyens: texteMoyens(moyensChoisis, ''),
+        responsable: '',
+        realise: false
       }
     }),
     travailleurs: [{ nom: 'Alex Martin', initiales: 'AM', date: dateJour }]
@@ -272,10 +344,10 @@ export function verifierPar5(d: DonneesPar5): Manque[] {
   /* Un risque reconnu présent sans moyen de prévention : c'est le seul cas où
      la fiche AGGRAVE la situation au lieu de la documenter — elle prouve qu'on
      savait, et ne montre rien qui ait été fait. */
-  for (const l of presents.filter((x) => !x.moyens.trim()))
+  for (const l of presents.filter((x) => !preventionEcrite(x)))
     m.push({
       gravite: 'bloquant',
-      texte: `« ${nom(l.risqueId)} » est présent, mais aucun moyen de prévention n'est écrit.`
+      texte: `« ${nom(l.risqueId)} » est présent, mais aucun moyen de prévention n'est coché.`
     })
 
   if (!d.travailleurs.some((t) => t.nom.trim() || t.initiales.trim()))
@@ -286,29 +358,21 @@ export function verifierPar5(d: DonneesPar5): Manque[] {
   if (!d.tache.trim())
     m.push({ gravite: 'avertissement', texte: 'La tâche à exécuter n\u2019est pas décrite.' })
 
-  if (!d.noProjet.trim() && !d.installation.trim())
+  if (!d.noProjet.trim())
     m.push({
       gravite: 'avertissement',
-      texte: 'Ni numéro de projet ni installation : la fiche sera difficile à retrouver.'
-    })
-
-  for (const l of presents.filter((x) => !x.responsable.trim()))
-    m.push({
-      gravite: 'avertissement',
-      texte: `« ${nom(l.risqueId)} » : aucun responsable désigné.`
-    })
-
-  const pasEnPlace = presents.filter((x) => x.moyens.trim() && !x.realise)
-  if (pasEnPlace.length)
-    m.push({
-      gravite: 'avertissement',
-      texte:
-        pasEnPlace.length === 1
-          ? `Les moyens de « ${nom(pasEnPlace[0].risqueId)} » ne sont pas déclarés mis en place.`
-          : `${pasEnPlace.length} risques ont des moyens qui ne sont pas déclarés mis en place.`
+      texte: 'Le numéro de projet n’est pas indiqué.'
     })
 
   return m
+}
+
+function preventionEcrite(l: LignePar5): boolean {
+  return Boolean(
+    (l.moyens || '').trim() ||
+      (l.moyenAutre || '').trim() ||
+      (l.moyensChoisis || []).some((s) => s.trim())
+  )
 }
 
 export const bloquants = (m: Manque[]): Manque[] => m.filter((x) => x.gravite === 'bloquant')

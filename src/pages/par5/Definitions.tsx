@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { ChevronDown, Search, X } from 'lucide-react'
-import { RISQUES } from '@/data/par5'
+import { RISQUES, moyensDuCarnet } from '@/data/par5'
 
 /**
  * Définition des 16 risques — la référence du carnet Génitique, consultable
@@ -107,7 +107,11 @@ export function Definitions() {
                       <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gtq-texte2">
                         Moyens de prévention types
                       </h3>
-                      <p className="text-[14px] leading-relaxed text-gtq-texte">{r.moyens}</p>
+                      <ul className="list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed text-gtq-texte">
+                        {moyensDuCarnet(r.moyens).map((phrase) => (
+                          <li key={phrase}>{phrase}</li>
+                        ))}
+                      </ul>
                     </div>
                   </div>
                 )}
