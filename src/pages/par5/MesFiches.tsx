@@ -3,7 +3,63 @@ import { FileText, Trash2, Plus, Share2, Download, CopyPlus } from 'lucide-react
 import { listerPar5, supprimerPar5, type Par5Enregistre, retouchee } from '@/data/par5-store'
 import { construirePdfPar5, envoyerPdf, peutChoisirDossier } from '@/data/pdf-par5'
 import { reessayerPar5 } from '@/data/sync-par5'
+import type { EtatEnvoi } from '@/data/par5-db'
 import type { Ouverture } from './Par5Form'
+
+const COULEUR: Record<EtatEnvoi, string> = {
+  attente: 'bg-neutral-400',
+  envoi: 'bg-amber-400',
+  ok: 'bg-emerald-500',
+  erreur: 'bg-red-500'
+}
+
+const LIBELLE_ETAT: Record<EtatEnvoi, string> = {
+  attente: 'en attente',
+  envoi: 'en cours',
+  ok: 'confirmé',
+  erreur: 'échoué'
+}
+
+function messagesTransmission(f: Par5Enregistre): Array<{ ton: 'erreur' | 'attente'; texte: string }> {
+  const lignes: Array<{ ton: 'erreur' | 'attente'; texte: string }> = []
+  if (f.etatBase && f.etatBase !== 'ok' && f.baseErreur) {
+    lignes.push({ ton: f.etatBase === 'erreur' ? 'erreur' : 'attente', texte: f.baseErreur })
+  }
+  if (f.etatSharePoint && f.etatSharePoint !== 'ok' && f.sharePointErreur && f.sharePointErreur !== f.baseErreur) {
+    lignes.push({
+      ton: f.etatSharePoint === 'erreur' ? 'erreur' : 'attente',
+      texte: f.sharePointErreur
+    })
+  }
+  return lignes
+}
+
+function peutReessayer(f: Par5Enregistre): boolean {
+  if (!f.statut || f.statut === 'brouillon' || f.statut === 'depose' || f.statut === 'envoi') return false
+  return f.etatBase !== 'ok' || f.etatSharePoint !== 'ok'
+}
+
+function Pastille({
+  etat,
+  libelle,
+  detail
+}: {
+  etat: EtatEnvoi
+  libelle: string
+  detail?: string | null
+}) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[12px] text-gtq-texte2" title={detail || LIBELLE_ETAT[etat]}>
+      <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${COULEUR[etat]}`} />
+      {libelle}
+      <span className="sr-only">
+        {' '}
+        : {LIBELLE_ETAT[etat]}
+        {detail ? `. ${detail}` : ''}
+      </span>
+    </span>
+  )
+}
 
 /**
  * Les PAR 5 de ce téléphone. La fiche reste sur l'appareil ; quand elle a été
@@ -124,33 +180,47 @@ export function MesFiches({
                 <Trash2 size={18} aria-hidden="true" />
               </button>
             </div>
-            {f.statut === 'depose' && (
-              <p className="mt-1 text-[12px] text-gtq-vert">
-                {f.sharePointUrl ? (
-                  <a href={f.sharePointUrl} target="_blank" rel="noreferrer" className="underline">
-                    Dans SharePoint
-                  </a>
-                ) : (
-                  'Dans SharePoint'
+            {f.statut !== 'brouillon' && (
+              <div className="mt-2">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <Pastille etat={f.etatBase || 'attente'} libelle="Base" detail={f.baseErreur} />
+                  <Pastille
+                    etat={f.etatSharePoint || 'attente'}
+                    libelle="SharePoint"
+                    detail={f.sharePointErreur}
+                  />
+                  {f.etatSharePoint === 'ok' && f.sharePointUrl && (
+                    <a
+                      href={f.sharePointUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[12px] text-gtq-vert underline"
+                    >
+                      Ouvrir
+                    </a>
+                  )}
+                  {f.statut === 'depose' && f.auteur && (
+                    <span className="text-[12px] text-gtq-texte2">{f.auteur}</span>
+                  )}
+                </div>
+                {messagesTransmission(f).map((ligne) => (
+                  <p
+                    key={ligne.texte}
+                    className={`mt-1 text-[12px] ${ligne.ton === 'erreur' ? 'text-red-500' : 'text-gtq-texte2'}`}
+                  >
+                    {ligne.texte}
+                  </p>
+                ))}
+                {peutReessayer(f) && (
+                  <button
+                    type="button"
+                    className="mt-1 text-[12px] text-gtq-texte underline"
+                    onClick={() => void reessayerPar5(f.id)}
+                  >
+                    Réessayer
+                  </button>
                 )}
-                {f.auteur ? ` · ${f.auteur}` : ''}
-              </p>
-            )}
-            {f.statut === 'attente' && (
-              <p className="mt-1 text-[12px] text-gtq-texte2">
-                {f.erreur || 'En attente de SharePoint'}
-              </p>
-            )}
-            {f.statut === 'envoi' && (
-              <p className="mt-1 text-[12px] text-gtq-texte2">Dépôt en cours</p>
-            )}
-            {f.statut === 'erreur' && (
-              <p className="mt-1 text-[12px] text-gtq-orange">
-                {f.erreur || 'Dépôt impossible.'}{' '}
-                <button type="button" className="underline" onClick={() => void reessayerPar5(f.id)}>
-                  Réessayer
-                </button>
-              </p>
+              </div>
             )}
 
             {/*

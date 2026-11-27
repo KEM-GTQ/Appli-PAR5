@@ -1,10 +1,10 @@
-/** Projet actif lu dans la liste SharePoint « Projets 2 ». */
+/** Code projet actif (colonne Code projet, état Actif) lu dans la liste SharePoint. */
 export interface Projet {
   numero: string
   phase: string
 }
 
-const CLE = 'gtq-par5-projets-actifs'
+const CLE = 'gtq-par5-codes-projet'
 
 function normaliser(liste: unknown): Projet[] {
   if (!Array.isArray(liste)) return []

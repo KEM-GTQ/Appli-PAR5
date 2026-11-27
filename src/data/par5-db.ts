@@ -9,7 +9,10 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { DonneesPar5 } from './par5'
 
-export type StatutSync = 'brouillon' | 'attente' | 'envoi' | 'depose' | 'erreur'
+export type StatutSync = 'brouillon' | 'attente' | 'envoi' | 'partiel' | 'depose' | 'erreur'
+
+/** Gris en attente, jaune pendant l'envoi, vert confirmé, rouge en échec. */
+export type EtatEnvoi = 'attente' | 'envoi' | 'ok' | 'erreur'
 
 export interface FicheStockee {
   id: string
@@ -25,6 +28,14 @@ export interface FicheStockee {
   deposeISO: string | null
   /** Compte Microsoft qui a déposé la fiche. Vide tant que l'envoi n'a pas abouti. */
   auteur?: string | null
+  /** Envoi de la fiche vers MySQL. Absent sur les fiches enregistrées avant cette séparation. */
+  etatBase?: EtatEnvoi
+  baseErreur?: string | null
+  baseReessayable?: boolean
+  /** Envoi du PDF vers SharePoint. */
+  etatSharePoint?: EtatEnvoi
+  sharePointErreur?: string | null
+  sharePointReessayable?: boolean
 }
 
 interface BasePar5 extends DBSchema {
@@ -60,9 +71,77 @@ export async function mettreFiche(fiche: FicheStockee): Promise<void> {
   await db.put(MAGASIN, fiche)
 }
 
+export function canalOuvert(etat: EtatEnvoi | undefined, reessayable: boolean | undefined): boolean {
+  if (etat === 'ok') return false
+  if (etat === 'erreur' && reessayable === false) return false
+  return true
+}
+
+export function statutDesEtats(fiche: Pick<FicheStockee, 'statut' | 'etatBase' | 'etatSharePoint'>): StatutSync {
+  if (fiche.statut === 'brouillon') return 'brouillon'
+  if (fiche.etatBase === 'ok' && fiche.etatSharePoint === 'ok') return 'depose'
+  if (fiche.etatBase === 'envoi' || fiche.etatSharePoint === 'envoi') return 'envoi'
+  if (fiche.etatBase === 'ok' || fiche.etatSharePoint === 'ok') return 'partiel'
+  if (fiche.etatBase === 'erreur' || fiche.etatSharePoint === 'erreur') return 'erreur'
+  return 'attente'
+}
+
+/**
+ * Les fiches d'avant la séparation n'ont qu'un statut global.
+ * Une fiche déposée est confirmée des deux côtés. Une erreur connue
+ * concerne la base : le PDF, lui, n'avait pas été envoyé.
+ */
+export function avecEtats(fiche: FicheStockee): FicheStockee {
+  if (fiche.etatBase && fiche.etatSharePoint) return fiche
+  if (fiche.statut === 'brouillon') {
+    return {
+      ...fiche,
+      etatBase: 'attente',
+      etatSharePoint: 'attente',
+      baseErreur: null,
+      sharePointErreur: null,
+      baseReessayable: false,
+      sharePointReessayable: false
+    }
+  }
+  if (fiche.statut === 'depose') {
+    return {
+      ...fiche,
+      etatBase: 'ok',
+      etatSharePoint: 'ok',
+      baseErreur: null,
+      sharePointErreur: null,
+      baseReessayable: true,
+      sharePointReessayable: true
+    }
+  }
+  const baseConnue = fiche.statut === 'erreur' || (fiche.statut === 'attente' && Boolean(fiche.erreur))
+  const suivante: FicheStockee = {
+    ...fiche,
+    etatBase: baseConnue ? 'erreur' : 'attente',
+    etatSharePoint: fiche.sharePointUrl ? 'ok' : 'attente',
+    baseErreur: baseConnue ? fiche.erreur : null,
+    sharePointErreur: null,
+    baseReessayable: fiche.reessayable !== false,
+    sharePointReessayable: true
+  }
+  suivante.statut = statutDesEtats(suivante)
+  return suivante
+}
+
+async function ranger(fiche: FicheStockee): Promise<FicheStockee> {
+  const complete = avecEtats(fiche)
+  if (complete !== fiche) {
+    const db = await ouvrirBase()
+    await db.put(MAGASIN, complete)
+  }
+  return complete
+}
+
 export async function lireFiche(id: string): Promise<FicheStockee | undefined> {
   const db = await ouvrirBase()
-  return db.get(MAGASIN, id)
+  const fiche = await db.get(MAGASIN, id)
+  return fiche ? ranger(fiche) : undefined
 }
 
 export async function patchFiche(
@@ -84,18 +163,21 @@ export async function supprimerFiche(id: string): Promise<void> {
 
 export async function toutesLesFiches(): Promise<FicheStockee[]> {
   const db = await ouvrirBase()
-  return db.getAll(MAGASIN)
+  const toutes = await db.getAll(MAGASIN)
+  return Promise.all(toutes.map((fiche) => ranger(fiche)))
+}
+
+/** Une fiche encore incomplète. Le canal déjà confirmé n'est pas renvoyé. */
+export function aEncoreUnEnvoi(fiche: FicheStockee): boolean {
+  if (fiche.statut === 'brouillon') return false
+  return (
+    canalOuvert(fiche.etatBase, fiche.baseReessayable) ||
+    canalOuvert(fiche.etatSharePoint, fiche.sharePointReessayable)
+  )
 }
 
 /** Celles qu'un échec réseau doit renvoyer. Un brouillon n'est pas dans la file. */
 export async function fichesADeposer(): Promise<FicheStockee[]> {
   const toutes = await toutesLesFiches()
-  return toutes
-    .filter(
-      (f) =>
-        f.statut === 'attente' ||
-        f.statut === 'envoi' ||
-        (f.statut === 'erreur' && f.reessayable)
-    )
-    .sort((a, b) => a.dateISO.localeCompare(b.dateISO))
+  return toutes.filter(aEncoreUnEnvoi).sort((a, b) => a.dateISO.localeCompare(b.dateISO))
 }

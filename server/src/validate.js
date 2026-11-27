@@ -42,7 +42,7 @@ function decodePdf(value) {
   return buffer;
 }
 
-export function validateFiche(body) {
+export function validateFiche(body, { pdfRequis = true } = {}) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new ValidationError("La fiche doit être un objet JSON.");
   }
@@ -61,7 +61,7 @@ export function validateFiche(body) {
     lignes: normaliserLignes(body.lignes),
     travailleurs: normaliserTravailleurs(body.travailleurs),
     pdfName: nomPdf(id),
-    pdf: decodePdf(body.pdfBase64),
+    pdf: pdfRequis ? decodePdf(body.pdfBase64) : null,
   };
 }
 

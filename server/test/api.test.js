@@ -93,10 +93,13 @@ test("dépose le PDF sans MySQL et réutilise le même nom", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fiche()),
     });
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 207);
     const body = await response.json();
     assert.equal(body.id, "par5-ab12cd34");
-    assert.equal(body.sharePointUrl, "https://genitique.sharepoint.com/fiche");
+    assert.equal(body.sharePoint.ok, true);
+    assert.equal(body.sharePoint.url, "https://genitique.sharepoint.com/fiche");
+    assert.equal(body.database.ok, false);
+    assert.equal(body.database.retryable, true);
     assert.equal(appels.length, 1);
     assert.equal(appels[0].fileName, "PAR5-par5-ab12cd34.pdf");
   });
@@ -133,7 +136,7 @@ test("l'upsert MySQL réutilise l'id et n'enregistre pas le PDF", async () => {
   assert.equal(requetes[0].params[10].includes("Harnais"), true);
 });
 
-test("écrit la fiche dans MySQL avant et après le dépôt SharePoint", async () => {
+test("écrit la fiche et dépose le PDF en parallèle, puis range le lien", async () => {
   const etapes = [];
   const app = createApp({
     env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
@@ -159,11 +162,16 @@ test("écrit la fiche dans MySQL avant et après le dépôt SharePoint", async (
       ),
     });
     assert.equal(response.status, 201);
-    assert.deepEqual(etapes, ["base", "pdf", "https://genitique.sharepoint.com/fiche"]);
+    const body = await response.json();
+    assert.equal(body.database.ok, true);
+    assert.equal(body.sharePoint.ok, true);
+    assert.equal(etapes.at(-1), "https://genitique.sharepoint.com/fiche");
+    assert.equal(etapes.includes("base"), true);
+    assert.equal(etapes.includes("pdf"), true);
   });
 });
 
-test("un échec MySQL laisse la fiche réessayable sans déposer le PDF", async () => {
+test("un échec MySQL n'empêche pas le dépôt du PDF", async () => {
   let depots = 0;
   const app = createApp({
     env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
@@ -181,14 +189,104 @@ test("un échec MySQL laisse la fiche réessayable sans déposer le PDF", async 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fiche()),
     });
-    assert.equal(response.status, 502);
+    assert.equal(response.status, 207);
     const body = await response.json();
-    assert.equal(body.retryable, true);
-    assert.equal(depots, 0);
+    assert.equal(body.database.ok, false);
+    assert.equal(body.database.retryable, true);
+    assert.match(body.database.error, /base/);
+    assert.equal(body.sharePoint.ok, true);
+    assert.equal(depots, 1);
   });
 });
 
-test("répond 503 réessayable tant que SharePoint n'est pas configuré", async () => {
+test("un échec SharePoint n'empêche pas l'écriture dans la base", async () => {
+  let ecritures = 0;
+  const app = createApp({
+    env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
+    uploadPdf: async () => {
+      throw new Error("bibliothèque refusée");
+    },
+    enregistrerFiche: async () => {
+      ecritures += 1;
+      return { ecrit: true };
+    },
+  });
+  await withServer(app, async (base) => {
+    const response = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fiche()),
+    });
+    assert.equal(response.status, 207);
+    const body = await response.json();
+    assert.equal(body.database.ok, true);
+    assert.equal(body.sharePoint.ok, false);
+    assert.equal(body.sharePoint.retryable, true);
+    assert.match(body.sharePoint.error, /SharePoint/);
+    assert.equal(ecritures, 1);
+  });
+});
+
+test("les deux échecs restent réessayables, chacun de son côté", async () => {
+  const app = createApp({
+    env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
+    uploadPdf: async () => {
+      throw new Error("bibliothèque refusée");
+    },
+    enregistrerFiche: async () => {
+      throw new Error("connexion refusée");
+    },
+  });
+  await withServer(app, async (base) => {
+    const response = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fiche()),
+    });
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.database.ok, false);
+    assert.equal(body.database.retryable, true);
+    assert.equal(body.sharePoint.ok, false);
+    assert.equal(body.sharePoint.retryable, true);
+  });
+});
+
+test("une reprise n'envoie que l'opération encore en échec", async () => {
+  let depots = 0;
+  let liens = [];
+  const app = createApp({
+    env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
+    uploadPdf: async () => {
+      depots += 1;
+      return { webUrl: "https://genitique.sharepoint.com/autre", itemId: "item-2" };
+    },
+    enregistrerFiche: async (recue, fichier) => {
+      liens.push(fichier?.webUrl || null);
+      return { ecrit: true };
+    },
+  });
+  await withServer(app, async (base) => {
+    const response = await fetch(`${base}/api/par5`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        fiche({
+          tenter: { base: true, sharePoint: false },
+          sharePointUrl: "https://genitique.sharepoint.com/fiche",
+        }),
+      ),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.database.ok, true);
+    assert.equal(body.sharePoint.tente, false);
+    assert.equal(depots, 0);
+    assert.deepEqual(liens, ["https://genitique.sharepoint.com/fiche"]);
+  });
+});
+
+test("sans SharePoint ni base, les deux canaux échouent et restent réessayables", async () => {
   const app = createApp({ env: {}, uploadPdf: async () => { throw new Error("ne doit pas être appelé"); } });
   await withServer(app, async (base) => {
     const response = await fetch(`${base}/api/par5`, {
@@ -196,14 +294,29 @@ test("répond 503 réessayable tant que SharePoint n'est pas configuré", async 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fiche()),
     });
-    assert.equal(response.status, 503);
+    assert.equal(response.status, 502);
     const body = await response.json();
-    assert.equal(body.retryable, true);
+    assert.equal(body.database.ok, false);
+    assert.equal(body.database.retryable, true);
+    assert.equal(body.sharePoint.ok, false);
+    assert.equal(body.sharePoint.retryable, true);
   });
 });
 
-test("refuse une fiche sans PDF", async () => {
-  const app = createApp({ env: configuredEnv, uploadPdf: async () => ({ webUrl: "", itemId: "" }) });
+test("un PDF absent bloque SharePoint et laisse la base s'écrire", async () => {
+  let depots = 0;
+  let ecritures = 0;
+  const app = createApp({
+    env: { ...configuredEnv, MYSQL_HOST: "localhost", MYSQL_USER: "root", MYSQL_DATABASE: "par5" },
+    uploadPdf: async () => {
+      depots += 1;
+      return { webUrl: "https://genitique.sharepoint.com/fiche", itemId: "item-1" };
+    },
+    enregistrerFiche: async () => {
+      ecritures += 1;
+      return { ecrit: true };
+    },
+  });
   await withServer(app, async (base) => {
     const { pdfBase64, ...sansPdf } = fiche();
     const response = await fetch(`${base}/api/par5`, {
@@ -211,8 +324,14 @@ test("refuse une fiche sans PDF", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sansPdf),
     });
-    assert.equal(response.status, 400);
-    assert.equal(pdfBase64.startsWith("JVBE"), true);
+    assert.equal(response.status, 207);
+    const body = await response.json();
+    assert.equal(body.database.ok, true);
+    assert.equal(body.sharePoint.ok, false);
+    assert.equal(body.sharePoint.retryable, false);
+    assert.equal(depots, 0);
+    assert.equal(ecritures, 1);
+    assert.equal(typeof pdfBase64, "string");
   });
 });
 

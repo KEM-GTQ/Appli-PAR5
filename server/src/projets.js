@@ -1,8 +1,8 @@
 import { HttpError } from "./errors.js";
 import { getAccessToken } from "./sharepoint.js";
 
-const CHAMP_PROJET = "Projet";
-const CHAMP_ETAT = "État";
+const CHAMP_PROJET = "Code_x0020_projet";
+const CHAMP_ETAT = "_x00c9_tat";
 const ETAT_ACTIF = "Actif";
 const CACHE_MS = 10 * 60 * 1000;
 const PAGE_MAX = 100;
@@ -42,7 +42,8 @@ function texte(valeur) {
 }
 
 /**
- * Garde les projets actifs, une fois chacun. Le texte affiché est la colonne Projet.
+ * Garde les projets actifs, une fois chacun.
+ * Le numéro affiché est la colonne Code projet. L'état lu est _x00c9_tat.
  */
 export function projetsDepuisItems(items, champs) {
   const nomChamp = champs?.nom || CHAMP_PROJET;
@@ -88,6 +89,25 @@ async function lireJson(fetchImpl, url, token) {
   return json;
 }
 
+/** Retrouve la liste par son titre, son nom interne, ou le dernier segment de son adresse. */
+export function trouverListe(listes, nomListe) {
+  const cle = String(nomListe || "").trim().toLocaleLowerCase("fr");
+  if (!cle) return null;
+  return (
+    (listes || []).find((liste) => {
+      if (String(liste.displayName || "").trim().toLocaleLowerCase("fr") === cle) return true;
+      if (String(liste.name || "").trim().toLocaleLowerCase("fr") === cle) return true;
+      try {
+        const chemin = decodeURIComponent(new URL(liste.webUrl).pathname);
+        const bout = chemin.split("/").filter(Boolean).pop() || "";
+        return bout.toLocaleLowerCase("fr") === cle;
+      } catch {
+        return false;
+      }
+    }) || null
+  );
+}
+
 function trouverColonne(colonnes, voulu) {
   const cle = voulu.trim().toLocaleLowerCase("fr");
   const colonne = colonnes.find(
@@ -119,10 +139,10 @@ async function charger(env, fetchImpl) {
   if (!site.id) throw new HttpError("Le site des projets n'a pas pu être ouvert.", 502, true);
 
   let listeId = "";
-  let listesUrl = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(site.id)}/lists?$select=id,displayName&$top=200`;
+  let listesUrl = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(site.id)}/lists?$select=id,name,displayName,webUrl&$top=200`;
   for (let page = 0; page < 10 && listesUrl && !listeId; page += 1) {
     const listes = await lireJson(fetchImpl, listesUrl, token);
-    listeId = (listes.value || []).find((liste) => liste.displayName === nomListe)?.id || "";
+    listeId = trouverListe(listes.value, nomListe)?.id || "";
     listesUrl = listes["@odata.nextLink"] || "";
   }
   if (!listeId) throw new HttpError(`La liste « ${nomListe} » est introuvable.`, 502, true);

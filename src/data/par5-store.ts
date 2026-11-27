@@ -17,6 +17,7 @@ import {
   mettreFiche,
   supprimerFiche,
   toutesLesFiches,
+  type EtatEnvoi,
   type FicheStockee,
   type StatutSync
 } from './par5-db'
@@ -44,6 +45,10 @@ export interface Par5Enregistre {
   reessayable?: boolean
   /** Compte Microsoft associé au moment du dépôt. */
   auteur?: string | null
+  etatBase?: EtatEnvoi
+  baseErreur?: string | null
+  etatSharePoint?: EtatEnvoi
+  sharePointErreur?: string | null
 }
 
 const CLE = 'gtq-par5'
@@ -61,7 +66,11 @@ function resume(fiche: FicheStockee): Par5Enregistre {
     erreur: fiche.erreur,
     sharePointUrl: fiche.sharePointUrl,
     reessayable: fiche.reessayable,
-    auteur: fiche.auteur
+    auteur: fiche.auteur,
+    etatBase: fiche.etatBase,
+    baseErreur: fiche.baseErreur,
+    etatSharePoint: fiche.etatSharePoint,
+    sharePointErreur: fiche.sharePointErreur
   }
 }
 
@@ -113,7 +122,13 @@ async function migrerAncienStockage(): Promise<void> {
       reessayable: false,
       erreur: null,
       sharePointUrl: null,
-      deposeISO: null
+      deposeISO: null,
+      etatBase: 'attente',
+      etatSharePoint: 'attente',
+      baseErreur: null,
+      sharePointErreur: null,
+      baseReessayable: false,
+      sharePointReessayable: false
     })
   }
   try {
@@ -214,9 +229,15 @@ export async function enregistrerPar5(
     statut: 'brouillon',
     reessayable: false,
     erreur: null,
-    sharePointUrl: existante?.sharePointUrl ?? null,
-    deposeISO: existante?.deposeISO ?? null,
-    auteur: existante?.auteur ?? null
+    sharePointUrl: null,
+    deposeISO: null,
+    auteur: existante?.auteur ?? null,
+    etatBase: 'attente',
+    etatSharePoint: 'attente',
+    baseErreur: null,
+    sharePointErreur: null,
+    baseReessayable: false,
+    sharePointReessayable: false
   }
   try {
     await mettreFiche(rec)

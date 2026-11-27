@@ -1,81 +1,72 @@
-# Génitique PAR 5 — application terrain
+# PAR 5 — guide simple
 
-Application **téléphone** permettant aux travailleurs de remplir sur place le
-**PAR 5** (analyse de risques, 16 risques du carnet Génitique de janvier 2025),
-de le signer et de le transmettre en PDF.
+Application pour téléphone. Elle sert à remplir une analyse de risques PAR 5
+sur le chantier, à la garder, puis à envoyer le PDF.
 
-La fiche et son PDF sont produits sur le téléphone et gardés dans IndexedDB.
-Le travailleur peut remplir et enregistrer un ou plusieurs PAR 5 sans réseau et
-sans session Microsoft. La connexion (Entra ID, code d'autorisation et PKCE) n'est
-demandée que pour l'envoi : au retour du réseau, l'application propose le compte
-professionnel, conserve les fiches déjà enregistrées, puis l'API dépose chaque PDF
-dans SharePoint et écrit la fiche dans MySQL au nom de ce compte. Ces fiches
-apparaissent dans Mes fiches. Si la connexion ou l'envoi échoue, elles restent sur
-le téléphone jusqu'à la réussite. Le téléphone n'a pas de secret Microsoft et ne
-peut pas écrire dans SharePoint lui-même. Un nouvel envoi de la même fiche écrase
-le fichier et met à jour la même ligne.
+Le détail du code est dans [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Le fichier HTML unique posé sur le Bureau ne peut pas déposer dans SharePoint.
-C'est la version hébergée (`dist-web/`) qui le fait.
+## Sur le chantier
 
-## Pile technique
+On peut remplir et enregistrer **une ou plusieurs fiches sans Internet et sans
+se connecter**.
 
-Vite · React 18 · TypeScript · Tailwind v4 · jsPDF. Pas d'Electron : la cible
-est un téléphone.
+1. Remplir la fiche. **No de projet** propose les projets actifs de SharePoint.
+   Si la liste ne s’affiche pas, on peut taper le nom à la main.
+2. **Enregistrer** garde la fiche et son PDF sur le téléphone.
+3. Quand le réseau revient, l’application demande le **compte Microsoft du
+   travail**. Les fiches déjà enregistrées ne sont pas perdues.
+4. Une fois connecté, chaque PDF part dans SharePoint et la fiche est écrite
+   dans la base, au nom de ce compte. On les retrouve dans **Mes fiches**.
+5. Si la connexion ou l’envoi échoue, les fiches **restent sur le téléphone**
+   jusqu’à ce que ça marche.
 
-## Commandes
+**Enregistrer le PDF** ouvre aussi l’enregistrement ou le partage du fichier
+sur l’appareil. **Exemple** remplit une fiche de démonstration.
 
-| Commande | Effet |
+Le téléphone n’écrit pas lui-même dans SharePoint. C’est le serveur qui le fait,
+après la connexion Microsoft.
+
+## Lancer l’application
+
+1. Copier `.env.example` vers `.env` et y mettre les accès (base, SharePoint,
+   compte Microsoft). Ne pas partager ce fichier.
+2. Dans un terminal : `npm i`
+3. Dans un terminal : `npm run dev`
+4. Dans un autre : `npm run api`
+
+Ouvrir http://localhost:5173/Appli-PAR5/
+
+| Commande | À quoi ça sert |
 | --- | --- |
-| `npm i` | Installer les dépendances requises |
-| `npm run dev` | Serveur de développement (proxy `/api` vers le port 3001) |
-| `npm run api` | API de dépôt SharePoint |
-| `npm run test:api` | Contrat de l'API, sans réseau |
-| `npm run build` | Contrôle des types puis construction dans `dist/` |
-| `npm run publier` | Construit puis copie **`Génitique PAR 5.html`** sur le Bureau |
-| `npm run apercu` | Sert `dist/` sur le port 4190 |
-| `npm run test:pdf` | Banc d'essai du PDF (relit le PDF produit avec pdf.js) |
-| `node tools/construire-web.cjs` | Produit `dist-web/`, la version **installable**, avec l'agent de service |
-| `node tools/audit-pdf.cjs` | Audit géométrique du PDF (débordements, chevauchements) |
-| `node tools/test-controle.cjs` | Banc d'essai du garde-fou avant transmission |
-| `node tools/contraste.cjs` | Vérifie les contrastes de la palette |
-| `node tools/faire-icone.cjs` | Regénère les icônes 180/192/512 px |
+| `npm run dev` | L’application, pour développer |
+| `npm run api` | L’envoi vers SharePoint et la base |
+| `npm run test:api` | Vérifie l’envoi sans toucher au vrai SharePoint |
+| `npm run build` | Prépare la version à distribuer |
+| `npm run publier` | Pose un fichier HTML unique sur le Bureau |
 
-Copier `.env.example` vers `.env` et y mettre l'application Entra avant le premier dépôt. En développement, `npm run dev` et `npm run api` tournent ensemble : le premier proxifie `/api` vers le second.
+Le fichier du Bureau marche hors ligne, mais **il n’envoie rien** à SharePoint.
+Seule la version hébergée (`dist-web/`, en HTTPS) envoie les PDF et peut
+s’installer sur le téléphone.
 
-## Deux formats de sortie
+## Où vont les informations
 
-- **`dist/index.html`** — fichier **unique**, tout inliné (y compris les
-  icônes). Se double-clique sur un poste, marche hors ligne, se copie sur une
-  clé. C'est ce que `npm run publier` dépose sur le Bureau.
-- **`dist-web/`** — dossier à déposer sur un hébergement **HTTPS**. Il porte le
-  manifeste, l'agent de service et les icônes en vrais fichiers : c'est le seul
-  format qu'Android propose d'« installer » et le seul qui fonctionne hors
-  ligne une fois servi par le réseau.
+- **PDF** : dossier SharePoint `Cursor`, sur le site PowerPlatform-Dev.
+  Renvoyer la même fiche remplace le PDF, elle n’en crée pas un deuxième.
+- **Fiche** (sans les photos) : base MySQL `par5`.
+- **Liste des projets** : liste SharePoint **Projets 2** (titre affiché
+  « Liste des projets »), sur `genitique.sharepoint.com`. Le menu montre la
+  colonne **Code projet**, seulement si **État** (`_x00c9_tat`) vaut **Actif**.
 
-Les deux dossiers sont **régénérés** à chaque construction et ne sont donc pas
-versionnés.
+Pour que cette liste s’affiche, un administrateur SharePoint doit autoriser
+l’application à **lire** le site `https://genitique.sharepoint.com`
+(permission *Sites.Selected*, rôle *read*, application
+`83c11de8-30e6-47fb-b241-eb3582f8e930`). Tant que ce n’est pas fait, on tape
+le projet à la main.
 
-## Structure
+La connexion Microsoft du téléphone doit aussi avoir cette adresse de retour
+déclarée : `http://localhost:5173/Appli-PAR5/`
 
-```
-src/
-  App.tsx                    coque + barre d'onglets (constante ONGLETS)
-  sw.js                      cache hors ligne et reprise du dépôt
-  components/                logo, écran d'ouverture, bannière d'installation
-  data/
-    par5.ts                  modèle des 16 risques + verifierPar5()
-    par5-store.ts            fiches (IndexedDB) et reprise de l'ancien localStorage
-    par5-db.ts               base locale
-    sync-par5.ts             file d'envoi vers l'API
-    pdf-par5.ts              construction et envoi du PDF
-    photo.ts                 compression et budget mémoire des photos
-    theme.ts                 bascule clair/sombre
-  pages/par5/                formulaire, mes fiches, définitions
-server/                      API : PDF vers SharePoint, fiche écrite dans MySQL
-tools/                       construction, publication et bancs d'essai
-```
+## Les 16 risques
 
-> ⚠️ `src/data/par5.ts` est une **copie** du carnet des 16 risques présent dans
-> ToolApp. Si le carnet officiel change, les deux projets doivent être mis à
-> jour.
+La liste des risques est dans `src/data/par5.ts`. C’est une copie du carnet
+Génitique. Si le carnet officiel change, il faut mettre à jour cette copie.

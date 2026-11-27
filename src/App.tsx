@@ -43,6 +43,7 @@ export function App() {
   /** Ligne d'état du dépôt. Vide quand tout va bien : l'écran reste celui du PAR 5. */
   const [annonce, setAnnonce] = useState<string | null>(null)
   const [connecte, setConnecte] = useState(() => navigator.onLine)
+  const [baseOk, setBaseOk] = useState<'inconnue' | 'ok' | 'ko'>('inconnue')
   const [compte, setCompte] = useState<string | null>(null)
   const [reauth, setReauth] = useState(false)
   const stockageBloque = useRef(false)
@@ -102,8 +103,12 @@ export function App() {
         const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
         const reponse = await fetch(`${base}/api/health`, { cache: 'no-store' })
         if (!reponse.ok) throw new Error('sante')
-        const corps = (await reponse.json()) as { sharePointConfigured?: boolean }
+        const corps = (await reponse.json()) as {
+          sharePointConfigured?: boolean
+          databaseOk?: boolean
+        }
         if (annule || stockage.current) return
+        setBaseOk(corps.databaseOk ? 'ok' : 'ko')
         if (!corps.sharePointConfigured) {
           setAnnonce('SharePoint n’est pas configuré. Les fiches restent sur ce téléphone.')
         } else if (!reauthRef.current) {
@@ -111,6 +116,7 @@ export function App() {
         }
       } catch {
         if (!annule && !stockage.current) {
+          setBaseOk('ko')
           setAnnonce('Le serveur ne répond pas. Les fiches restent sur ce téléphone.')
         }
       }
@@ -139,6 +145,7 @@ export function App() {
 
     function horsLigne(): void {
       setConnecte(false)
+      setBaseOk('inconnue')
       if (stockage.current) return
       setAnnonce(
         authRequise() && !compteActif()
@@ -285,6 +292,26 @@ export function App() {
             >
               Exemple
             </button>
+            <span
+              role="status"
+              aria-live="polite"
+              title={
+                baseOk === 'ok'
+                  ? 'La base répond.'
+                  : baseOk === 'ko'
+                    ? 'La base ne répond pas.'
+                    : 'Hors réseau : la base n’a pas été vérifiée.'
+              }
+              className="flex items-center gap-1.5 px-1.5 text-[12px] font-medium text-white/80"
+            >
+              <span
+                aria-hidden="true"
+                className={`h-2.5 w-2.5 rounded-full ${
+                  baseOk === 'ok' ? 'bg-emerald-400' : baseOk === 'ko' ? 'bg-red-500' : 'bg-white/40'
+                }`}
+              />
+              Base
+            </span>
             <span
               role="status"
               aria-live="polite"

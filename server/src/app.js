@@ -7,7 +7,7 @@ import {
   missingSettings,
   uploadPdf as uploadPdfToSharePoint,
 } from "./sharepoint.js";
-import { validateFiche } from "./validate.js";
+import { validateFiche, ValidationError } from "./validate.js";
 import { isEntraConfigured, verifierEntra } from "./entra.js";
 import { listerProjets as lireProjetsSharePoint } from "./projets.js";
 
@@ -116,15 +116,62 @@ export function createApp({
     });
   }));
 
+  function detailErreur(error) {
+    const morceaux = [];
+    if (error?.code) morceaux.push(error.code);
+    if (error?.message) morceaux.push(error.message);
+    if (Array.isArray(error?.errors)) {
+      for (const cause of error.errors) {
+        if (cause?.code || cause?.message) morceaux.push(cause.code || cause.message);
+      }
+    }
+    return morceaux.filter(Boolean).join(" — ") || "erreur inconnue";
+  }
+
+  function messagePour(error, defaut) {
+    if (error instanceof HttpError && error.message) return error.message;
+    const code = error?.code || error?.errors?.find((cause) => cause?.code)?.code;
+    if (typeof code === "string" && /^[A-Z0-9_]{2,40}$/.test(code)) return `${defaut} (${code})`;
+    return defaut;
+  }
+
+  function echecCanal(error, defaut) {
+    console.error(detailErreur(error));
+    return {
+      tente: true,
+      ok: false,
+      error: messagePour(error, defaut),
+      retryable: error instanceof HttpError ? error.retryable : true,
+    };
+  }
+
   async function ecrireEnBase(fiche, uploaded) {
     const ecrire = enregistrerFiche || ((ficheEcrite, fichier) => ecrireMysql(pool, ficheEcrite, fichier));
     try {
       await ecrire(fiche, uploaded);
     } catch (error) {
       if (error instanceof HttpError) throw error;
-      console.error(`Écriture MySQL échouée pour ${fiche.id} : ${error.message}`);
-      throw new HttpError("L'enregistrement dans la base a échoué.", 502, true);
+      console.error(`Écriture MySQL échouée pour ${fiche.id} : ${detailErreur(error)}`);
+      throw new HttpError(messagePour(error, "L'enregistrement dans la base a échoué."), 502, true);
     }
+  }
+
+  /* Un essai précédent a déjà le lien. On le réécrit avec la fiche,
+     sans renvoyer le PDF. */
+  function lienDejaConnu(body) {
+    const url = body?.sharePointUrl;
+    if (typeof url !== "string") return null;
+    const trimmed = url.trim();
+    if (!trimmed.startsWith("https://") || trimmed.length > 2048) return null;
+    return { webUrl: trimmed, itemId: null };
+  }
+
+  function operationsDemandees(body) {
+    const brut = body?.tenter;
+    return {
+      base: brut?.base !== false,
+      sharePoint: brut?.sharePoint !== false,
+    };
   }
 
   /* La liste sert à remplir la fiche, y compris avant la connexion Microsoft.
@@ -139,41 +186,90 @@ export function createApp({
   }));
 
   app.post("/api/par5", requireUser, requireApiKey, asyncRoute(async (req, res) => {
-    const fiche = validateFiche(req.body);
+    const tenter = operationsDemandees(req.body);
+    if (!tenter.base && !tenter.sharePoint) {
+      throw new HttpError("Rien à envoyer.", 400, false);
+    }
+
+    /* Un PDF illisible empêche SharePoint. Il n'empêche pas d'écrire la fiche. */
+    let fiche;
+    let erreurPdf = null;
+    try {
+      fiche = validateFiche(req.body, { pdfRequis: tenter.sharePoint });
+    } catch (error) {
+      const pdfEnCause = error instanceof ValidationError && /pdf|fichier/i.test(error.message);
+      if (!pdfEnCause || !tenter.base || !tenter.sharePoint) throw error;
+      erreurPdf = error;
+      fiche = validateFiche(req.body, { pdfRequis: false });
+    }
+
     const auteur = req.user?.preferred_username || req.user?.name || "";
     fiche.auteur = auteur.slice(0, 320);
-    const missing = missingSettings(env);
-    if (missing.length) {
-      console.error(`Dépôt non configuré. Manque : ${missing.join(", ")}`);
-      throw new HttpError("Le dépôt SharePoint n'est pas configuré.", 503, true);
+    const lienConnu = lienDejaConnu(req.body);
+
+    async function operationBase() {
+      if (!isDatabaseConfigured(env)) {
+        throw new HttpError("La base n'est pas configurée.", 503, true);
+      }
+      await ecrireEnBase(fiche, lienConnu);
     }
 
-    /* La fiche est écrite avant le PDF. Si la connexion tombe pendant l'envoi
-       vers SharePoint, la ligne existe déjà et le prochain essai la complète. */
-    if (isDatabaseConfigured(env)) await ecrireEnBase(fiche, null);
-
-    let uploaded;
-    try {
-      uploaded = await uploadPdf(env, fiche.pdfName, fiche.pdf);
-    } catch (error) {
-      if (error instanceof HttpError) throw error;
-      console.error(`Dépôt SharePoint échoué : ${error.message}`);
-      throw new HttpError("Dépôt SharePoint impossible.", 502, true);
+    async function operationSharePoint() {
+      if (erreurPdf) throw erreurPdf;
+      const missing = missingSettings(env);
+      if (missing.length) {
+        console.error(`Dépôt non configuré. Manque : ${missing.join(", ")}`);
+        throw new HttpError("Le dépôt SharePoint n'est pas configuré.", 503, true);
+      }
+      if (!fiche.pdf) throw new HttpError("Le PDF est requis.", 400, false);
+      return uploadPdf(env, fiche.pdfName, fiche.pdf);
     }
 
-    if (!uploaded.webUrl) {
-      console.warn(`Le dépôt de ${fiche.id} n'a pas renvoyé d'adresse.`);
+    const [baseSettled, shareSettled] = await Promise.allSettled([
+      tenter.base ? operationBase() : Promise.resolve(null),
+      tenter.sharePoint ? operationSharePoint() : Promise.resolve(null),
+    ]);
+
+    let database = tenter.base
+      ? baseSettled.status === "fulfilled"
+        ? { tente: true, ok: true }
+        : echecCanal(baseSettled.reason, "L'enregistrement dans la base a échoué.")
+      : { tente: false, ok: false };
+
+    let sharePoint = { tente: false, ok: false };
+    let uploaded = null;
+    if (tenter.sharePoint) {
+      if (shareSettled.status === "fulfilled") {
+        uploaded = shareSettled.value;
+        if (!uploaded?.webUrl) console.warn(`Le dépôt de ${fiche.id} n'a pas renvoyé d'adresse.`);
+        sharePoint = { tente: true, ok: true, url: uploaded?.webUrl || null };
+      } else {
+        sharePoint = echecCanal(shareSettled.reason, "Dépôt SharePoint impossible.");
+      }
     }
 
-    if (isDatabaseConfigured(env)) await ecrireEnBase(fiche, uploaded);
+    /* Le lien est écrit après les deux essais. Son échec ne retire pas
+       une fiche déjà confirmée, ni un PDF déjà déposé. */
+    if (sharePoint.ok && uploaded?.webUrl && isDatabaseConfigured(env) && (database.ok || !tenter.base)) {
+      try {
+        await ecrireEnBase(fiche, uploaded);
+      } catch (error) {
+        console.error(`Lien SharePoint non écrit pour ${fiche.id} : ${detailErreur(error)}`);
+      }
+    }
 
-    const syncedAt = new Date().toISOString();
+    const tentes = [database, sharePoint].filter((canal) => canal.tente);
+    const reussis = tentes.filter((canal) => canal.ok).length;
+    const status = reussis === 0 ? 502 : reussis === tentes.length ? 201 : 207;
+    const syncedAt = database.ok && sharePoint.ok ? new Date().toISOString() : null;
     console.log(
-      `PDF ${fiche.pdfName} déposé dans SharePoint${isDatabaseConfigured(env) ? " et écrit dans MySQL" : ""}.`,
+      `PAR 5 ${fiche.id} : base ${database.tente ? (database.ok ? "ok" : "échec") : "laissée"}, SharePoint ${sharePoint.tente ? (sharePoint.ok ? "ok" : "échec") : "laissé"}.`,
     );
-    res.status(201).json({
+    res.status(status).json({
       id: fiche.id,
-      sharePointUrl: uploaded.webUrl || null,
+      database,
+      sharePoint,
+      sharePointUrl: sharePoint.url || lienConnu?.webUrl || null,
       syncedAt,
     });
   }));

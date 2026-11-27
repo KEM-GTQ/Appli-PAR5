@@ -2,16 +2,24 @@
  * File d'envoi vers l'API.
  *
  * Le téléphone ne parle qu'à cette API. Le secret Microsoft reste sur le
- * serveur, qui dépose le PDF dans SharePoint. Tant que le serveur ne répond
- * pas, la fiche et son PDF restent ici ; le même id est renvoyé, donc un
- * second essai écrase le fichier au lieu de le dupliquer.
+ * serveur. La base et SharePoint partent ensemble, et l'échec de l'un
+ * laisse l'autre aboutir. Tant que les deux ne sont pas confirmés, la fiche
+ * et son PDF restent ici. Le même id est renvoyé : un second essai remplace
+ * le fichier et la ligne au lieu d'en créer d'autres.
  *
  * Chromium peut finir l'envoi après la fermeture (Background Sync). iOS non :
  * l'application réessaie à la prochaine ouverture, toutes les 30 secondes, et
  * quand le navigateur annonce le retour du réseau.
  */
 import type { Par5Enregistre } from './par5-store'
-import { fichesADeposer, lireFiche, patchFiche } from './par5-db'
+import {
+  canalOuvert,
+  fichesADeposer,
+  lireFiche,
+  patchFiche,
+  statutDesEtats,
+  type FicheStockee
+} from './par5-db'
 
 const VERROU = 'gtq-par5-envoi'
 const BALISE = 'par5-sync'
@@ -104,72 +112,115 @@ export async function inscrireSyncArrierePlan(): Promise<void> {
   }
 }
 
-async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[number]): Promise<boolean> {
-  if (!fiche.pdf) {
-    await patchFiche(fiche.id, {
-      statut: 'erreur',
-      reessayable: false,
-      erreur: 'Le PDF manque sur cet appareil.'
+type CanalReponse = {
+  tente?: boolean
+  ok?: boolean
+  error?: string
+  retryable?: boolean
+  url?: string | null
+}
+
+function resumeEnvoi(fiche: FicheStockee, patch: Partial<FicheStockee>): Partial<FicheStockee> {
+  const suivant: FicheStockee = { ...fiche, ...patch, id: fiche.id }
+  const statut = statutDesEtats(suivant)
+  const erreur = [suivant.baseErreur, suivant.sharePointErreur].filter((texte) => texte).join(' ') || null
+  const reessayable =
+    canalOuvert(suivant.etatBase, suivant.baseReessayable) ||
+    canalOuvert(suivant.etatSharePoint, suivant.sharePointReessayable)
+  return {
+    ...patch,
+    statut,
+    erreur,
+    reessayable,
+    deposeISO: statut === 'depose' ? suivant.deposeISO || new Date().toISOString() : suivant.deposeISO
+  }
+}
+
+async function noter(fiche: FicheStockee, patch: Partial<FicheStockee>): Promise<FicheStockee | null> {
+  const suivante = await patchFiche(fiche.id, resumeEnvoi(fiche, patch))
+  await prevenir()
+  return suivante
+}
+
+async function envoyerUne(fiche: FicheStockee): Promise<boolean> {
+  let veutBase = fiche.etatBase !== 'ok'
+  let veutSharePoint = fiche.etatSharePoint !== 'ok'
+  if (!veutBase && !veutSharePoint) return true
+
+  if (veutSharePoint && !fiche.pdf) {
+    const sansPdf = await noter(fiche, {
+      etatSharePoint: 'erreur',
+      sharePointErreur: 'Le PDF manque sur cet appareil.',
+      sharePointReessayable: false
     })
-    await prevenir()
-    return false
+    veutSharePoint = false
+    if (!veutBase || !sansPdf) return false
+    fiche = sansPdf
   }
 
-  await patchFiche(fiche.id, { statut: 'envoi', erreur: null })
-  await prevenir()
+  const courant = await noter(fiche, {
+    ...(veutBase ? { etatBase: 'envoi' as const, baseErreur: null } : {}),
+    ...(veutSharePoint ? { etatSharePoint: 'envoi' as const, sharePointErreur: null } : {})
+  })
+  if (courant) fiche = courant
 
   let entete: HeadersInit
   let auteur = ''
   try {
     const obtenu = await entetes()
     if ('pause' in obtenu) {
-      await patchFiche(fiche.id, {
-        statut: 'attente',
-        reessayable: true,
-        erreur: obtenu.pause
+      await noter(fiche, {
+        ...(veutBase ? { etatBase: 'attente' as const, baseErreur: obtenu.pause, baseReessayable: true } : {}),
+        ...(veutSharePoint
+          ? { etatSharePoint: 'attente' as const, sharePointErreur: obtenu.pause, sharePointReessayable: true }
+          : {})
       })
       if (obtenu.reauth && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(BALISE_REAUTH))
       }
-      await prevenir()
       return false
     }
     entete = obtenu.entete
     auteur = obtenu.auteur
   } catch {
-    await patchFiche(fiche.id, {
-      statut: 'attente',
-      reessayable: true,
-      erreur: 'En attente d’une connexion.'
+    const texte = 'En attente d’une connexion.'
+    await noter(fiche, {
+      ...(veutBase ? { etatBase: 'attente' as const, baseErreur: texte, baseReessayable: true } : {}),
+      ...(veutSharePoint
+        ? { etatSharePoint: 'attente' as const, sharePointErreur: texte, sharePointReessayable: true }
+        : {})
     })
-    await prevenir()
     return false
   }
+
+  const corpsEnvoi: Record<string, unknown> = {
+    id: fiche.id,
+    noProjet: fiche.donnees.noProjet,
+    installation: fiche.donnees.installation,
+    emplacement: fiche.donnees.emplacement,
+    tache: fiche.donnees.tache,
+    dateISO: fiche.dateISO,
+    majISO: fiche.majISO,
+    lignes: fiche.donnees.lignes.map((l) => ({
+      risqueId: l.risqueId,
+      present: l.present,
+      specification: l.specification,
+      moyens: l.moyens,
+      responsable: l.responsable,
+      realise: l.realise
+    })),
+    travailleurs: fiche.donnees.travailleurs,
+    tenter: { base: veutBase, sharePoint: veutSharePoint }
+  }
+  if (fiche.sharePointUrl) corpsEnvoi.sharePointUrl = fiche.sharePointUrl
+  if (veutSharePoint && fiche.pdf) corpsEnvoi.pdfBase64 = enBase64(fiche.pdf)
 
   try {
     const reponse = await fetch(adresse('/api/par5'), {
       method: 'POST',
       headers: entete,
       cache: 'no-store',
-      body: JSON.stringify({
-        id: fiche.id,
-        noProjet: fiche.donnees.noProjet,
-        installation: fiche.donnees.installation,
-        emplacement: fiche.donnees.emplacement,
-        tache: fiche.donnees.tache,
-        dateISO: fiche.dateISO,
-        majISO: fiche.majISO,
-        lignes: fiche.donnees.lignes.map((l) => ({
-          risqueId: l.risqueId,
-          present: l.present,
-          specification: l.specification,
-          moyens: l.moyens,
-          responsable: l.responsable,
-          realise: l.realise
-        })),
-        travailleurs: fiche.donnees.travailleurs,
-        pdfBase64: enBase64(fiche.pdf)
-      })
+      body: JSON.stringify(corpsEnvoi)
     })
     let corps: {
       id?: string
@@ -178,49 +229,64 @@ async function envoyerUne(fiche: Awaited<ReturnType<typeof fichesADeposer>>[numb
       code?: string
       sharePointUrl?: string | null
       syncedAt?: string
+      database?: CanalReponse
+      sharePoint?: CanalReponse
     } = {}
     try {
       corps = await reponse.json()
     } catch {
       corps = {}
     }
-    if (reponse.ok && corps.id === fiche.id) {
-      await patchFiche(fiche.id, {
-        statut: 'depose',
-        reessayable: false,
-        erreur: null,
-        sharePointUrl: corps.sharePointUrl || null,
-        deposeISO: corps.syncedAt || new Date().toISOString(),
-        auteur: auteur || null
-      })
-      await prevenir()
-      return true
-    }
-    if (corps.code === 'auth') {
-      await patchFiche(fiche.id, {
-        statut: 'attente',
-        reessayable: true,
-        erreur: typeof corps.error === 'string' ? corps.error : 'Session expirée. Reconnectez-vous pour envoyer la fiche.'
+    if (corps.code === 'auth' || reponse.status === 401) {
+      const texte =
+        typeof corps.error === 'string' ? corps.error : 'Session expirée. Reconnectez-vous pour envoyer la fiche.'
+      await noter(fiche, {
+        ...(veutBase ? { etatBase: 'attente' as const, baseErreur: texte, baseReessayable: true } : {}),
+        ...(veutSharePoint
+          ? { etatSharePoint: 'attente' as const, sharePointErreur: texte, sharePointReessayable: true }
+          : {})
       })
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(BALISE_REAUTH))
-      await prevenir()
       return false
     }
-    const reessayable = reponse.ok || (typeof corps.retryable === 'boolean' ? corps.retryable : reponse.status >= 500)
-    await patchFiche(fiche.id, {
-      statut: 'erreur',
-      reessayable,
-      erreur: typeof corps.error === 'string' ? corps.error : `Dépôt échoué (${reponse.status}).`
-    })
-    await prevenir()
-    return false
+
+    const repli = typeof corps.error === 'string' ? corps.error : `Envoi échoué (${reponse.status}).`
+    const repliReessayable = typeof corps.retryable === 'boolean' ? corps.retryable : reponse.status >= 500
+    const patch: Partial<FicheStockee> = {}
+    if (veutBase) {
+      if (corps.database?.ok === true && corps.id === fiche.id) {
+        patch.etatBase = 'ok'
+        patch.baseErreur = null
+        patch.baseReessayable = true
+      } else {
+        patch.etatBase = 'erreur'
+        patch.baseErreur = corps.database?.error || repli
+        patch.baseReessayable = corps.database ? corps.database.retryable !== false : repliReessayable
+      }
+    }
+    if (veutSharePoint) {
+      if (corps.sharePoint?.ok === true && corps.id === fiche.id) {
+        patch.etatSharePoint = 'ok'
+        patch.sharePointErreur = null
+        patch.sharePointReessayable = true
+        patch.sharePointUrl = corps.sharePoint.url || corps.sharePointUrl || fiche.sharePointUrl
+      } else {
+        patch.etatSharePoint = 'erreur'
+        patch.sharePointErreur = corps.sharePoint?.error || repli
+        patch.sharePointReessayable = corps.sharePoint ? corps.sharePoint.retryable !== false : repliReessayable
+      }
+    }
+    if (auteur && (patch.etatBase === 'ok' || patch.etatSharePoint === 'ok')) patch.auteur = auteur
+    const suivante = await noter(fiche, patch)
+    return suivante?.etatBase === 'ok' && suivante.etatSharePoint === 'ok'
   } catch {
-    await patchFiche(fiche.id, {
-      statut: 'attente',
-      reessayable: true,
-      erreur: 'En attente d’une connexion.'
+    const texte = 'En attente d’une connexion.'
+    await noter(fiche, {
+      ...(veutBase ? { etatBase: 'attente' as const, baseErreur: texte, baseReessayable: true } : {}),
+      ...(veutSharePoint
+        ? { etatSharePoint: 'attente' as const, sharePointErreur: texte, sharePointReessayable: true }
+        : {})
     })
-    await prevenir()
     return false
   }
 }
@@ -272,8 +338,16 @@ export async function deposerPar5(
       pdf,
       nomPdf: `PAR5-${fiche.id}.pdf`,
       statut: 'attente',
+      etatBase: 'attente',
+      etatSharePoint: 'attente',
+      baseErreur: null,
+      sharePointErreur: null,
+      baseReessayable: true,
+      sharePointReessayable: true,
       reessayable: true,
-      erreur: null
+      erreur: null,
+      sharePointUrl: null,
+      deposeISO: null
     })
   )
   await prevenir()
@@ -288,24 +362,38 @@ export async function deposerPar5(
 
   const bilan = await flushPending()
   const etat = await lireFiche(fiche.id)
-  if (etat?.statut === 'depose') return { texte: 'PDF déposé dans SharePoint.', alerte: false }
-  if (etat?.statut === 'erreur' || (etat?.statut === 'attente' && etat.erreur)) {
-    return { texte: etat.erreur || 'Dépôt SharePoint impossible.', alerte: true }
+  if (etat?.etatBase === 'ok' && etat.etatSharePoint === 'ok') {
+    return { texte: 'Fiche enregistrée dans la base et PDF déposé dans SharePoint.', alerte: false }
   }
+  const morceaux: string[] = []
+  if (etat?.etatBase === 'ok') morceaux.push('La base a enregistré la fiche.')
+  else if (etat?.baseErreur) morceaux.push(etat.baseErreur)
+  if (etat?.etatSharePoint === 'ok') morceaux.push('Le PDF est dans SharePoint.')
+  else if (etat?.sharePointErreur) morceaux.push(etat.sharePointErreur)
   if (bilan.offline) {
-    return {
-      texte: 'Hors réseau. Le PDF partira dans SharePoint au retour de la connexion.',
-      alerte: true
-    }
+    morceaux.push('Hors réseau. La fiche et le PDF partiront au retour de la connexion.')
   }
+  if (morceaux.length) return { texte: morceaux.join(' '), alerte: true }
   return {
-    texte: 'PDF conservé sur ce téléphone. Il sera déposé dans SharePoint dès que le serveur répond.',
+    texte: 'Fiche conservée sur ce téléphone. L’envoi reprendra dès que le serveur répond.',
     alerte: false
   }
 }
 
 export async function reessayerPar5(id: string): Promise<void> {
-  await avecVerrou(() => patchFiche(id, { statut: 'attente', reessayable: true, erreur: null }))
+  await avecVerrou(async () => {
+    const fiche = await lireFiche(id)
+    if (!fiche) return
+    await patchFiche(
+      id,
+      resumeEnvoi(fiche, {
+        ...(fiche.etatBase !== 'ok' ? { etatBase: 'attente' as const, baseErreur: null, baseReessayable: true } : {}),
+        ...(fiche.etatSharePoint !== 'ok'
+          ? { etatSharePoint: 'attente' as const, sharePointErreur: null, sharePointReessayable: true }
+          : {})
+      })
+    )
+  })
   await prevenir()
   await flushPending()
 }
